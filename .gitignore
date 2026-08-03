@@ -1,0 +1,18 @@
+# Segredos — NUNCA subir
+.streamlit/secrets.toml
+*.json
+
+# Dados/relatórios locais (se você ainda testar em modo local, sem Drive)
+historico_ag.xlsx
+De Material.xlsx
+02.05.01.csv
+02.02.20.csv
+03.07.13.csv
+RET.csv
+02.03.04*.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
