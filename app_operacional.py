@@ -17,7 +17,7 @@ from comum import (
 
 st.set_page_config(page_title="AG - Operacional", layout="wide")
 st.title("Ativos de Giro (AG) — Operacional")
-st.caption("Painel, Venda (554/654), Cheio, Vazio e Variação. Vazio por PA e Conciliação de Mapas ficam no app separado 'Conciliação de Mapas'.")
+st.caption("Painel, Venda (554/654), Cheio e Vazio (cada um já com sua própria Variação por data). Vazio por PA e Conciliação de Mapas ficam no app separado 'Conciliação de Mapas'.")
 
 # --- CARREGAMENTO DE ARQUIVOS (SIDEBAR) ---
 with st.sidebar:
@@ -153,13 +153,93 @@ if alertas_fora_depara:
     st.warning("Códigos apareceram nas bases mas não estão no De Material.")
 
 
-aba_painel, aba_movimentacao, aba_cheio, aba_vazio, aba_evolucao, aba_dados = st.tabs(
-    ["Painel", "Venda", "Cheio", "Vazio", "Variação", "Dados"]
+ORDEM_FAMILIA = {"300ml": 0, "Verde 600": 1, "600ml": 1, "1L": 2, "Barril 30L": 3, "Barril 50L": 3, "Barril": 3}
+ORDEM_TIPO_600 = {"Garrafa_Verde 600": 0, "Garrafa_600ml": 1, "Garrafeira_Verde 600": 2, "Garrafeira_600ml": 2}
+
+
+def chave_ordenacao(rotulo_completo: str) -> tuple:
+    familia = padronizar_familia(rotulo_completo) or "ZZZ"
+    tipo = classificar_tipo_generico(rotulo_completo)
+    fam_prioridade = ORDEM_FAMILIA.get(familia, 9)
+    chave_600 = f"{tipo}_{familia}"
+    sub_prioridade = ORDEM_TIPO_600.get(chave_600, 0 if tipo in ("Garrafa", "Barril") else 1 if tipo == "Garrafeira" else 9)
+    return (fam_prioridade, sub_prioridade, rotulo_completo)
+
+
+def mostrar_mapa_calor(pivot: pd.DataFrame, rotulo_metrica: str):
+    try: pivot = pivot[sorted(pivot.columns, key=lambda d: pd.to_datetime(d, dayfirst=True))].fillna(0)
+    except Exception: pivot = pivot.fillna(0)
+    cmap = LinearSegmentedColormap.from_list("azul", ["#F3F8FD", "#CFE4F7", "#9AC7EE", "#5FA3DE", "#2E75B8"])
+    st.markdown(f"**{rotulo_metrica}**")
+    st.dataframe(pivot.style.background_gradient(cmap=cmap, axis=None).format(precision=0, thousands="."), width='stretch')
+
+
+def renderizar_mapa_calor(nome_aba_excel, coluna_valor, rotulo_metrica):
+    historico = ler_aba_historico(nome_aba_excel)
+    if historico.empty or coluna_valor not in historico.columns:
+        st.info(f"Ainda não há histórico pra '{rotulo_metrica}'.")
+        return
+    colunas_desc = [c for c in ["Descrição", "Descricao"] if c in historico.columns]
+    rotulo = historico["Material"].astype(str)
+    if colunas_desc: rotulo = rotulo + " - " + historico[colunas_desc[0]].astype(str)
+    historico["AG"] = [com_apelido(cod, r) for cod, r in zip(historico["Material"].astype(str), rotulo)]
+    pivot = historico.pivot_table(index="AG", columns="Data", values=coluna_valor, aggfunc="sum")
+    pivot = pivot.reindex(sorted(pivot.index, key=chave_ordenacao))
+    mostrar_mapa_calor(pivot, rotulo_metrica)
+    if st.button(f"Limpar histórico de: {rotulo_metrica}"):
+        salvar_aba_historico(nome_aba_excel, pd.DataFrame())
+        st.rerun()
+
+
+def renderizar_mapa_calor_unificado(nome_aba_excel, rotulo_fonte):
+    historico = ler_aba_historico(nome_aba_excel)
+    if historico.empty:
+        st.info(f"Ainda não há histórico pra '{rotulo_fonte}'.")
+        return
+
+    col_gf = "Garrafeiras_ou_Barris" if "Garrafeiras_ou_Barris" in historico.columns else "Garrafeiras"
+    linhas = {}
+
+    def pegar(fam, col):
+        sub = historico[historico["Material"].astype(str) == fam]
+        return sub.groupby("Data")[col].sum() if not sub.empty and col in sub.columns else None
+
+    for rot, fam in [("Garrafa Litrinho", "300ml"), ("Garrafa 600 Verde", "Verde 600"), ("Garrafa 600 Normal", "600ml"), ("Garrafa 1L", "1L")]:
+        if (s := pegar(fam, "Garrafas")) is not None: linhas[rot] = s
+
+    for rot, fam in [("Garrafeira Litrinho", "300ml"), ("Garrafeira 1L", "1L")]:
+        if (s := pegar(fam, col_gf if col_gf == "Garrafeiras" else "Garrafeiras")) is not None: linhas[rot] = s
+
+    s_600, s_vd = pegar("600ml", "Garrafeiras"), pegar("Verde 600", "Garrafeiras")
+    if s_600 is not None or s_vd is not None:
+        base = pd.Series(dtype=float).add(s_600 if s_600 is not None else 0, fill_value=0)
+        linhas["Garrafeira 600ml"] = base.add(s_vd if s_vd is not None else 0, fill_value=0)
+
+    for rot, fam in [("Barril", "Barril"), ("Barril 30L", "Barril 30L"), ("Barril 50L", "Barril 50L")]:
+        col_busca = "Unidades" if fam != "Barril" else col_gf
+        if (s := pegar(fam, col_busca)) is not None: linhas[rot] = s
+
+    if not linhas: return
+    pivot = pd.DataFrame(linhas).T.reindex(sorted(pd.DataFrame(linhas).T.index, key=chave_ordenacao))
+    mostrar_mapa_calor(pivot, rotulo_fonte)
+    if st.button(f"Limpar histórico de: {rotulo_fonte}"):
+        salvar_aba_historico(nome_aba_excel, pd.DataFrame())
+        st.rerun()
+
+
+aba_painel, aba_movimentacao, aba_cheio, aba_vazio, aba_dados = st.tabs(
+    ["Painel", "Venda", "Cheio", "Vazio", "Dados"]
 )
 
 
 with aba_movimentacao:
     st.caption("Movimentação (vendido/retornado) por AG — Filtrado exclusivamente pelos códigos presentes no 'De Material'.")
+
+    st.markdown("#### 📈 Variação (histórico por dia)")
+    renderizar_mapa_calor("Venda", "Qtd. Vendida/Movimentada", "Venda (Operação 554)")
+    st.divider()
+    st.markdown("#### 📋 Resumo (arquivo carregado agora)")
+
     if df_movimentacao is not None:
         colunas_necessarias = {"Item", "Código Operação", "Qtde Entrada"}
         if colunas_necessarias.issubset(df_movimentacao.columns):
@@ -222,6 +302,12 @@ with aba_movimentacao:
 
 with aba_cheio:
     st.caption("Estoque Cheio — Filtrado exclusivamente pela coluna de Retornabilidade do RET.csv.")
+
+    st.markdown("#### 📈 Variação (histórico por dia)")
+    renderizar_mapa_calor_unificado("Cheio", "Cheio")
+    st.divider()
+    st.markdown("#### 📋 Resumo (arquivo carregado agora)")
+
     if df_estoque_cheio is not None and df_ret is not None:
         if {"Cod", "UN", "Qtd_Cheio", "Descricao"}.issubset(df_estoque_cheio.columns):
 
@@ -318,91 +404,12 @@ with aba_vazio:
 
     historico_vazio = ler_aba_historico("Vazio")
     if not historico_vazio.empty:
-        st.markdown("**Histórico salvo**")
+        st.divider()
+        st.markdown("#### 📈 Variação (histórico por dia)")
+        renderizar_mapa_calor_unificado("Vazio", "Vazio (FAROL AG)")
+        st.divider()
+        st.markdown("#### 📋 Resumo (histórico salvo)")
         st.dataframe(historico_vazio.sort_values("Data", ascending=False), width='stretch', hide_index=True)
-
-
-with aba_evolucao:
-    st.caption("Mapa de calor do histórico de AG.")
-
-    ORDEM_FAMILIA = {"300ml": 0, "Verde 600": 1, "600ml": 1, "1L": 2, "Barril 30L": 3, "Barril 50L": 3, "Barril": 3}
-    ORDEM_TIPO_600 = {"Garrafa_Verde 600": 0, "Garrafa_600ml": 1, "Garrafeira_Verde 600": 2, "Garrafeira_600ml": 2}
-
-    def chave_ordenacao(rotulo_completo: str) -> tuple:
-        familia = padronizar_familia(rotulo_completo) or "ZZZ"
-        tipo = classificar_tipo_generico(rotulo_completo)
-        fam_prioridade = ORDEM_FAMILIA.get(familia, 9)
-        chave_600 = f"{tipo}_{familia}"
-        sub_prioridade = ORDEM_TIPO_600.get(chave_600, 0 if tipo in ("Garrafa", "Barril") else 1 if tipo == "Garrafeira" else 9)
-        return (fam_prioridade, sub_prioridade, rotulo_completo)
-
-    def mostrar_mapa_calor(pivot: pd.DataFrame, rotulo_metrica: str):
-        try: pivot = pivot[sorted(pivot.columns, key=lambda d: pd.to_datetime(d, dayfirst=True))].fillna(0)
-        except Exception: pivot = pivot.fillna(0)
-        cmap = LinearSegmentedColormap.from_list("azul", ["#F3F8FD", "#CFE4F7", "#9AC7EE", "#5FA3DE", "#2E75B8"])
-        st.markdown(f"**{rotulo_metrica}**")
-        st.dataframe(pivot.style.background_gradient(cmap=cmap, axis=None).format(precision=0, thousands="."), width='stretch')
-
-    def renderizar_mapa_calor(nome_aba_excel, coluna_valor, rotulo_metrica):
-        historico = ler_aba_historico(nome_aba_excel)
-        if historico.empty or coluna_valor not in historico.columns:
-            st.info(f"Ainda não há histórico pra '{rotulo_metrica}'.")
-            return
-        colunas_desc = [c for c in ["Descrição", "Descricao"] if c in historico.columns]
-        rotulo = historico["Material"].astype(str)
-        if colunas_desc: rotulo = rotulo + " - " + historico[colunas_desc[0]].astype(str)
-        historico["AG"] = [com_apelido(cod, r) for cod, r in zip(historico["Material"].astype(str), rotulo)]
-        pivot = historico.pivot_table(index="AG", columns="Data", values=coluna_valor, aggfunc="sum")
-        pivot = pivot.reindex(sorted(pivot.index, key=chave_ordenacao))
-        mostrar_mapa_calor(pivot, rotulo_metrica)
-        if st.button(f"Limpar histórico de: {rotulo_metrica}"):
-            salvar_aba_historico(nome_aba_excel, pd.DataFrame())
-            st.rerun()
-
-    def renderizar_mapa_calor_unificado(nome_aba_excel, rotulo_fonte):
-        historico = ler_aba_historico(nome_aba_excel)
-        if historico.empty:
-            st.info(f"Ainda não há histórico pra '{rotulo_fonte}'.")
-            return
-
-        col_gf = "Garrafeiras_ou_Barris" if "Garrafeiras_ou_Barris" in historico.columns else "Garrafeiras"
-        linhas = {}
-
-        def pegar(fam, col):
-            sub = historico[historico["Material"].astype(str) == fam]
-            return sub.groupby("Data")[col].sum() if not sub.empty and col in sub.columns else None
-
-        for rot, fam in [("Garrafa Litrinho", "300ml"), ("Garrafa 600 Verde", "Verde 600"), ("Garrafa 600 Normal", "600ml"), ("Garrafa 1L", "1L")]:
-            if (s := pegar(fam, "Garrafas")) is not None: linhas[rot] = s
-
-        for rot, fam in [("Garrafeira Litrinho", "300ml"), ("Garrafeira 1L", "1L")]:
-            if (s := pegar(fam, col_gf if col_gf == "Garrafeiras" else "Garrafeiras")) is not None: linhas[rot] = s
-
-        s_600, s_vd = pegar("600ml", "Garrafeiras"), pegar("Verde 600", "Garrafeiras")
-        if s_600 is not None or s_vd is not None:
-            base = pd.Series(dtype=float).add(s_600 if s_600 is not None else 0, fill_value=0)
-            linhas["Garrafeira 600ml"] = base.add(s_vd if s_vd is not None else 0, fill_value=0)
-
-        for rot, fam in [("Barril", "Barril"), ("Barril 30L", "Barril 30L"), ("Barril 50L", "Barril 50L")]:
-            col_busca = "Unidades" if fam != "Barril" else col_gf
-            if (s := pegar(fam, col_busca)) is not None: linhas[rot] = s
-
-        if not linhas: return
-        pivot = pd.DataFrame(linhas).T.reindex(sorted(pd.DataFrame(linhas).T.index, key=chave_ordenacao))
-        mostrar_mapa_calor(pivot, rotulo_fonte)
-        if st.button(f"Limpar histórico de: {rotulo_fonte}"):
-            salvar_aba_historico(nome_aba_excel, pd.DataFrame())
-            st.rerun()
-
-    grupos_historico = {"Movimentação (venda, Operação 554)": [("Venda", "Qtd. Vendida/Movimentada", "Qtd. Vendida/Movimentada")]}
-    fontes_unificadas = ["Cheio", "Vazio (FAROL AG)"]
-
-    grupo_escolhido = st.selectbox("Fonte", list(grupos_historico.keys()) + fontes_unificadas)
-    if grupo_escolhido in fontes_unificadas:
-        renderizar_mapa_calor_unificado("Cheio" if grupo_escolhido == "Cheio" else "Vazio", grupo_escolhido)
-    else:
-        for aba_ex, col_val, rot_met in grupos_historico[grupo_escolhido]:
-            renderizar_mapa_calor(aba_ex, col_val, rot_met)
 
 
 with aba_dados:
