@@ -12,7 +12,7 @@ from comum import (
     localizar_grade_mais_recente, extrair_data_do_nome_arquivo,
     acumular_historico, codigos_fora_do_depara,
     coletar_datas_disponiveis, MAPA_APELIDOS, com_apelido, calcular_totais_por_familia,
-    classificar_tipo_generico,
+    classificar_tipo_generico, gdrive_ativo, listar_arquivos_pasta,
 )
 
 st.set_page_config(page_title="AG - Operacional", layout="wide")
@@ -25,6 +25,24 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
     st.caption("Os arquivos brutos só são relidos quando você aperta esse botão.")
+
+    if gdrive_ativo():
+        with st.expander("🔍 Diagnóstico Google Drive"):
+            try:
+                arquivos_pasta = listar_arquivos_pasta()
+                if arquivos_pasta:
+                    st.success(f"{len(arquivos_pasta)} arquivo(s) visíveis na pasta configurada:")
+                    for a in arquivos_pasta:
+                        st.caption(f"• {a['name']}  ({a.get('modifiedTime', '?')})")
+                else:
+                    st.warning(
+                        "A conexão com o Drive funcionou, mas a pasta apareceu vazia pra essa conta de serviço. "
+                        "Confira se o pasta_id no secrets é exatamente o desta pasta, e se ela foi mesmo "
+                        "compartilhada com o e-mail da conta de serviço (não um arquivo individual, a PASTA)."
+                    )
+            except Exception as e:
+                st.error(f"Erro ao consultar o Drive: {e}")
+
     st.divider()
 
     st.header("Bases (carregadas automaticamente)")
