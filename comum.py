@@ -3,10 +3,12 @@ Funções e constantes compartilhadas entre os apps de AG:
 - app_operacional.py  (Painel, Venda, Cheio, Vazio, Vazio por PA, Variação, Dados)
 - app_conciliacao.py  (Conciliação Mapas PA, Conciliação Mapas Sede)
 
-Ambos os apps devem rodar na MESMA pasta que este arquivo, junto com
-historico_ag.xlsx, De Material.xlsx, 02.05.01.csv, RET.csv, etc.
+Modo de armazenamento: LOCAL (arquivos na mesma pasta do projeto) ou GOOGLE DRIVE
+(pra deploy na nuvem, onde não existe uma pasta local persistente). Controlado
+pelo secrets.toml — ver instruções no final deste arquivo.
 """
 
+import io
 import streamlit as st
 import pandas as pd
 import re
@@ -20,6 +22,84 @@ ARQUIVO_COMODATO = PASTA_PROJETO / "02.02.20.csv"    # comodato (emprestado)
 ARQUIVO_MOVIMENTACAO = PASTA_PROJETO / "02.05.01.csv"  # movimentações 554/654
 ARQUIVO_RET = PASTA_PROJETO / "RET.csv"  # cadastro de produtos retornáveis
 ARQUIVO_HISTORICO_EXCEL = PASTA_PROJETO / "historico_ag.xlsx"  # planilha única, uma aba por origem
+NOME_HISTORICO_EXCEL = "historico_ag.xlsx"
+
+
+# =========================================================================
+# GOOGLE DRIVE — ativado via secrets.toml (ver instruções no final do arquivo)
+# =========================================================================
+
+def gdrive_ativo() -> bool:
+    """True se o secrets.toml tiver [gdrive] configurado com ativo=true."""
+    try:
+        return bool(st.secrets.get("gdrive", {}).get("ativo", False))
+    except Exception:
+        return False
+
+
+@st.cache_resource(show_spinner=False)
+def _servico_drive():
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    info = dict(st.secrets["gdrive_service_account"])
+    credenciais = service_account.Credentials.from_service_account_info(
+        info, scopes=["https://www.googleapis.com/auth/drive"]
+    )
+    return build("drive", "v3", credentials=credenciais)
+
+
+def _pasta_id() -> str:
+    return st.secrets["gdrive"]["pasta_id"]
+
+
+def listar_arquivos_pasta(nome_contem: str | None = None) -> list[dict]:
+    """Lista arquivos da pasta configurada, mais recentes primeiro. nome_contem filtra por substring do nome."""
+    servico = _servico_drive()
+    query = f"'{_pasta_id()}' in parents and trashed = false"
+    if nome_contem:
+        query += f" and name contains '{nome_contem}'"
+    resultado = servico.files().list(
+        q=query, fields="files(id, name, modifiedTime)", orderBy="modifiedTime desc"
+    ).execute()
+    return resultado.get("files", [])
+
+
+def _baixar_bytes_drive(file_id: str) -> bytes:
+    from googleapiclient.http import MediaIoBaseDownload
+    servico = _servico_drive()
+    buffer = io.BytesIO()
+    request = servico.files().get_media(fileId=file_id)
+    downloader = MediaIoBaseDownload(buffer, request)
+    concluido = False
+    while not concluido:
+        _, concluido = downloader.next_chunk()
+    buffer.seek(0)
+    return buffer.read()
+
+
+def _subir_bytes_drive(nome_arquivo: str, conteudo: bytes, mimetype: str) -> None:
+    """Sobe uma nova versão do arquivo (atualiza se já existir com esse nome na pasta, senão cria)."""
+    from googleapiclient.http import MediaIoBaseUpload
+    servico = _servico_drive()
+    existentes = listar_arquivos_pasta(nome_contem=nome_arquivo)
+    existentes = [a for a in existentes if a["name"] == nome_arquivo]
+    media = MediaIoBaseUpload(io.BytesIO(conteudo), mimetype=mimetype, resumable=False)
+    if existentes:
+        servico.files().update(fileId=existentes[0]["id"], media_body=media).execute()
+    else:
+        metadata = {"name": nome_arquivo, "parents": [_pasta_id()]}
+        servico.files().create(body=metadata, media_body=media).execute()
+
+
+@st.cache_data(show_spinner=False, ttl=60)
+def _baixar_arquivo_mais_recente_drive(nome_contem: str) -> bytes | None:
+    """Busca o arquivo mais recente cujo nome contenha nome_contem e baixa seu conteúdo.
+    Cache de 60s: várias interações seguidas na mesma sessão não batem na API repetidamente,
+    mas uma troca de versão no Drive é detectada em até 1 minuto."""
+    arquivos = listar_arquivos_pasta(nome_contem)
+    if not arquivos:
+        return None
+    return _baixar_bytes_drive(arquivos[0]["id"])
 
 
 # =========================================================================
@@ -40,18 +120,17 @@ def deduplicar_nomes_coluna(nomes: list[str]) -> list[str]:
     return resultado
 
 
-def ler_csv_robusto(caminho: Path) -> pd.DataFrame:
+def _ler_csv_bytes(dados: bytes) -> pd.DataFrame:
     encodings = ["utf-8-sig", "latin1", "cp1252"]
     separadores = [";", ",", "\t"]
     ultimo_erro = None
     for enc in encodings:
         for sep in separadores:
             try:
-                with open(caminho, encoding=enc) as f:
-                    primeira_linha = f.readline().rstrip("\n\r")
+                primeira_linha = dados.decode(enc).split("\n", 1)[0].rstrip("\r")
                 colunas = deduplicar_nomes_coluna(primeira_linha.split(sep))
                 return pd.read_csv(
-                    caminho, sep=sep, encoding=enc, thousands=".", decimal=",",
+                    io.BytesIO(dados), sep=sep, encoding=enc, thousands=".", decimal=",",
                     header=0, names=colunas,
                 )
             except Exception as e:
@@ -59,8 +138,25 @@ def ler_csv_robusto(caminho: Path) -> pd.DataFrame:
     raise ultimo_erro
 
 
+def ler_csv_robusto(caminho: Path) -> pd.DataFrame:
+    with open(caminho, "rb") as f:
+        return _ler_csv_bytes(f.read())
+
+
 @st.cache_data(show_spinner=False)
 def carregar(caminho: Path) -> pd.DataFrame | None:
+    """Modo LOCAL: lê do disco pelo caminho de sempre.
+    Modo DRIVE: ignora o caminho e busca na pasta do Drive um arquivo cujo nome
+    contenha o mesmo prefixo do caminho local (ex. 'De Material', '02.05.01', 'RET')."""
+    if gdrive_ativo():
+        nome_busca = caminho.stem  # "De Material", "02.05.01", "RET", "02.02.20"
+        dados = _baixar_arquivo_mais_recente_drive(nome_busca)
+        if dados is None:
+            return None
+        if caminho.suffix.lower() == ".csv":
+            return _ler_csv_bytes(dados)
+        return pd.read_excel(io.BytesIO(dados))
+
     if not caminho.exists():
         return None
     if caminho.suffix.lower() == ".csv":
@@ -69,6 +165,26 @@ def carregar(caminho: Path) -> pd.DataFrame | None:
 
 
 def salvar_aba_historico(nome_aba: str, df: pd.DataFrame) -> None:
+    if gdrive_ativo():
+        historico_atual = _baixar_arquivo_mais_recente_drive(NOME_HISTORICO_EXCEL)
+        buffer_saida = io.BytesIO()
+        if historico_atual:
+            # reabre todas as abas existentes e substitui/adiciona a que mudou
+            abas_existentes = pd.read_excel(io.BytesIO(historico_atual), sheet_name=None)
+            abas_existentes[nome_aba] = df
+            with pd.ExcelWriter(buffer_saida, engine="openpyxl") as writer:
+                for aba, conteudo in abas_existentes.items():
+                    conteudo.to_excel(writer, sheet_name=aba, index=False)
+        else:
+            with pd.ExcelWriter(buffer_saida, engine="openpyxl") as writer:
+                df.to_excel(writer, sheet_name=nome_aba, index=False)
+        _subir_bytes_drive(
+            NOME_HISTORICO_EXCEL, buffer_saida.getvalue(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        _baixar_arquivo_mais_recente_drive.clear()
+        return
+
     if ARQUIVO_HISTORICO_EXCEL.exists():
         with pd.ExcelWriter(ARQUIVO_HISTORICO_EXCEL, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
             df.to_excel(writer, sheet_name=nome_aba, index=False)
@@ -78,6 +194,15 @@ def salvar_aba_historico(nome_aba: str, df: pd.DataFrame) -> None:
 
 
 def ler_aba_historico(nome_aba: str) -> pd.DataFrame:
+    if gdrive_ativo():
+        dados = _baixar_arquivo_mais_recente_drive(NOME_HISTORICO_EXCEL)
+        if dados is None:
+            return pd.DataFrame()
+        try:
+            return pd.read_excel(io.BytesIO(dados), sheet_name=nome_aba)
+        except ValueError:
+            return pd.DataFrame()
+
     if not ARQUIVO_HISTORICO_EXCEL.exists():
         return pd.DataFrame()
     try:
@@ -217,6 +342,16 @@ def converter_cheio_em_ag(row: pd.Series) -> pd.Series:
 def encontrar_arquivo_por_prefixo(pasta: Path, prefixo: str) -> Path | None:
     candidatos = sorted(pasta.glob(f"{prefixo}*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
     return candidatos[0] if candidatos else None
+
+
+def localizar_grade_mais_recente(prefixo: str = "02.03.04") -> Path | None:
+    """Acha a grade de estoque cheio mais recente (nome com data grudada, ex. 02.03.04.30_07_26.csv).
+    Modo LOCAL: procura na pasta do projeto. Modo DRIVE: procura na pasta configurada do Drive.
+    Retorna um Path (real ou só com o nome, usado depois só pra extrair stem/suffix e chamar carregar())."""
+    if gdrive_ativo():
+        arquivos = listar_arquivos_pasta(nome_contem=prefixo)
+        return Path(arquivos[0]["name"]) if arquivos else None
+    return encontrar_arquivo_por_prefixo(PASTA_PROJETO, prefixo)
 
 
 def extrair_data_do_nome_arquivo(caminho: Path, prefixo: str) -> str | None:
