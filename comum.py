@@ -52,29 +52,55 @@ def _pasta_id() -> str:
     return st.secrets["gdrive"]["pasta_id"]
 
 
+def _com_retry(func, tentativas: int = 3, espera_inicial: float = 1.0):
+    """Executa func() com novas tentativas em caso de falha de rede transitória
+    (SSL, timeout, conexão), com espera crescente entre elas. Erros de permissão/
+    autenticação não são deste tipo e propagam na primeira tentativa mesmo assim
+    (não adianta tentar de novo)."""
+    import ssl
+    import socket
+    import time
+    erros_transitorios = (ssl.SSLError, socket.timeout, socket.error, ConnectionError, TimeoutError, OSError)
+    ultimo_erro = None
+    espera = espera_inicial
+    for tentativa in range(tentativas):
+        try:
+            return func()
+        except erros_transitorios as e:
+            ultimo_erro = e
+            if tentativa < tentativas - 1:
+                time.sleep(espera)
+                espera *= 2
+    raise ultimo_erro
+
+
 def listar_arquivos_pasta(nome_contem: str | None = None) -> list[dict]:
     """Lista arquivos da pasta configurada, mais recentes primeiro. nome_contem filtra por substring do nome."""
-    servico = _servico_drive()
-    query = f"'{_pasta_id()}' in parents and trashed = false"
-    if nome_contem:
-        query += f" and name contains '{nome_contem}'"
-    resultado = servico.files().list(
-        q=query, fields="files(id, name, modifiedTime)", orderBy="modifiedTime desc"
-    ).execute()
-    return resultado.get("files", [])
+    def _fazer():
+        servico = _servico_drive()
+        query = f"'{_pasta_id()}' in parents and trashed = false"
+        if nome_contem:
+            query += f" and name contains '{nome_contem}'"
+        resultado = servico.files().list(
+            q=query, fields="files(id, name, modifiedTime)", orderBy="modifiedTime desc"
+        ).execute()
+        return resultado.get("files", [])
+    return _com_retry(_fazer)
 
 
 def _baixar_bytes_drive(file_id: str) -> bytes:
-    from googleapiclient.http import MediaIoBaseDownload
-    servico = _servico_drive()
-    buffer = io.BytesIO()
-    request = servico.files().get_media(fileId=file_id)
-    downloader = MediaIoBaseDownload(buffer, request)
-    concluido = False
-    while not concluido:
-        _, concluido = downloader.next_chunk()
-    buffer.seek(0)
-    return buffer.read()
+    def _fazer():
+        from googleapiclient.http import MediaIoBaseDownload
+        servico = _servico_drive()
+        buffer = io.BytesIO()
+        request = servico.files().get_media(fileId=file_id)
+        downloader = MediaIoBaseDownload(buffer, request)
+        concluido = False
+        while not concluido:
+            _, concluido = downloader.next_chunk()
+        buffer.seek(0)
+        return buffer.read()
+    return _com_retry(_fazer)
 
 
 def _subir_bytes_drive(nome_arquivo: str, conteudo: bytes, mimetype: str) -> None:
@@ -438,7 +464,7 @@ def formata_diferenca_fisica(dif, tipo: str, familia: str) -> str:
 # =========================================================================
 
 MAPA_APELIDOS = {
-    "198214": "GARRAFA LITRINHO", "786238": "GARRAFA 600 VERDE", "27983": "GARRAFA 600 VERDE",
+    "198214": "GARRAFA LITRINHO", "786238": "GARRAFA 600 VERDE", "27983": "GARRAFA 600 AMBAR",
     "188006": "GARRAFA 1L", "101490": "BARRIL 50L", "188005": "GARRAFEIRA 1L",
     "863059": "GARRAFEIRA LITRINHO", "899599": "GARRAFEIRA LITRINHO", "104195": "PALLET PBR1",
     "42069": "PALLET PBR2",
