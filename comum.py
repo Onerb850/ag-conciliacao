@@ -435,7 +435,10 @@ def classificar_tipo_generico(desc: str) -> str:
 
 
 def formata_qtd_fisica(qtd, tipo: str, familia: str) -> str:
-    """Garrafa (300ml/600ml/Verde 600/1L) vira 'X cx + Y gf'; qualquer outro tipo (Garrafeira, Barril, Palete, etc.) vira 'X un'."""
+    """Garrafa (300ml/600ml/Verde 600/1L) vira 'X un (Y cx + Z gf)' — mostra a quantidade bruta E a
+    conversão em caixa lado a lado, já que são duas leituras diferentes da mesma coisa.
+    Qualquer outro tipo (Garrafeira, Barril, Palete, etc.) vira só 'X un', pois cada unidade ali já
+    corresponde fisicamente a uma caixa/unidade só, sem conversão a fazer."""
     qtd = int(qtd)
     if qtd == 0:
         return "0"
@@ -445,7 +448,8 @@ def formata_qtd_fisica(qtd, tipo: str, familia: str) -> str:
         partes = []
         if cx > 0: partes.append(f"{cx} cx")
         if gf > 0: partes.append(f"{gf} gf")
-        return " + ".join(partes) if partes else "0"
+        texto_cx = " + ".join(partes) if partes else "0 cx"
+        return f"{qtd} un ({texto_cx})"
     return f"{qtd} un"
 
 
@@ -469,6 +473,15 @@ MAPA_APELIDOS = {
     "863059": "GARRAFEIRA LITRINHO", "899599": "GARRAFEIRA 600", "104195": "PALLET PBR1",
     "42069": "PALLET PBR2",
 }
+
+# A descrição da garrafeira não menciona "300"/"600" (ex: "GARRAFEIRA PLAST,24 G"), então
+# padronizar_familia() não consegue classificá-la pela descrição — precisa saber pelo código.
+GARRAFEIRA_FAMILIA = {"863059": "300ml", "899599": "600ml", "188005": "1L"}
+
+
+def familia_normalizada_600(familia: str) -> str:
+    """Agrupa 600ml e Verde 600 numa família só — a mesma garrafeira física (899599) serve às duas cores."""
+    return "600ml" if familia in ("600ml", "Verde 600") else familia
 
 
 def com_apelido(codigo: str, rotulo_base: str) -> str:
