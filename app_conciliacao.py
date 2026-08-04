@@ -14,6 +14,8 @@ from comum import (
     formata_qtd_fisica,
     formata_diferenca_fisica,
     com_apelido,
+    GARRAFEIRA_FAMILIA,
+    familia_normalizada_600,
 )
 
 st.set_page_config(page_title="Conciliação de Mapas (AG)", layout="wide")
@@ -340,3 +342,81 @@ with aba_conciliacao_sede:
         )
 
         st.caption("Nota: comparação item a item na unidade bruta da movimentação (sem converter pra caixa) — diferente da Conciliação Mapas PA, que usa a contagem física convertida pelo conferente.")
+
+        # =================================================================
+        # CONFERÊNCIA CRUZADA: GARRAFA × GARRAFEIRA, POR MAPA
+        # Pega o caso de faturar quantidade de garrafeira desproporcional à
+        # quantidade de garrafa (ex: 1 garrafeira pra 48 garrafas) — mesmo que
+        # cada item, individualmente, bata perfeito entre Saída e Retorno.
+        # =================================================================
+        st.divider()
+        st.markdown("### ⚠️ Conferência Garrafa × Garrafeira (por Mapa)")
+        st.caption(
+            "Compara, por mapa, quantas caixas de garrafa (convertidas a partir da quantidade bruta) "
+            "saíram/retornaram contra quantas garrafeiras saíram/retornaram — mesmo com Saída = Retorno "
+            "em cada item, pode haver descompasso entre os dois (ex: faturar 1 garrafeira pra 48 garrafas)."
+        )
+
+        linhas_diverg = []
+        for mapa_val, grupo in df_concil_sede.groupby("Mapa"):
+            garrafas_grp = grupo[grupo["Tipo"] == "Garrafa"].copy()
+            garrafeiras_grp = grupo[grupo["Tipo"] == "Garrafeira"].copy()
+            if garrafas_grp.empty and garrafeiras_grp.empty:
+                continue
+
+            garrafas_grp["FamiliaNorm"] = garrafas_grp["Familia"].apply(familia_normalizada_600)
+            garrafeiras_grp["FamiliaNorm"] = garrafeiras_grp["Material"].map(GARRAFEIRA_FAMILIA)
+
+            familias_presentes = set(garrafas_grp["FamiliaNorm"].dropna()) | set(garrafeiras_grp["FamiliaNorm"].dropna())
+            for fam in familias_presentes:
+                if fam == "Outro" or fam is None:
+                    continue
+                fator = int(fator_conversao_caixas(fam))
+                sg_saida = garrafas_grp.loc[garrafas_grp["FamiliaNorm"] == fam, "Qtd_Saida_554"].sum()
+                sg_retorno = garrafas_grp.loc[garrafas_grp["FamiliaNorm"] == fam, "Qtd_Retorno_654"].sum()
+                sgf_saida = garrafeiras_grp.loc[garrafeiras_grp["FamiliaNorm"] == fam, "Qtd_Saida_554"].sum()
+                sgf_retorno = garrafeiras_grp.loc[garrafeiras_grp["FamiliaNorm"] == fam, "Qtd_Retorno_654"].sum()
+
+                for fluxo, qtd_garrafa, qtd_garrafeira in [
+                    ("Saída", sg_saida, sgf_saida), ("Retorno", sg_retorno, sgf_retorno)
+                ]:
+                    if qtd_garrafa == 0 and qtd_garrafeira == 0:
+                        continue
+                    cx_equiv = int(qtd_garrafa) // fator
+                    gf_soltas = int(qtd_garrafa) % fator
+                    dif = int(qtd_garrafeira) - cx_equiv
+
+                    if dif == 0:
+                        status = "✅ Bateu"
+                    elif dif > 0:
+                        status = "⚠️ Garrafeira a mais"
+                    else:
+                        status = "⚠️ Garrafeira a menos"
+
+                    linhas_diverg.append({
+                        "Mapa": mapa_val, "Família": fam, "Fluxo": fluxo,
+                        "Garrafas (un)": int(qtd_garrafa), "Caixas equiv.": cx_equiv,
+                        "Garrafas soltas": gf_soltas, "Garrafeiras": int(qtd_garrafeira),
+                        "Diferença": dif, "Status": status,
+                    })
+
+        if linhas_diverg:
+            df_diverg = pd.DataFrame(linhas_diverg).sort_values(["Mapa", "Família", "Fluxo"])
+
+            status_filter_diverg = st.selectbox(
+                "Filtrar por Status:",
+                ["Todos", "⚠️ Garrafeira a mais", "⚠️ Garrafeira a menos", "✅ Bateu"],
+                key="status_diverg",
+            )
+            df_diverg_display = df_diverg if status_filter_diverg == "Todos" else df_diverg[df_diverg["Status"] == status_filter_diverg]
+
+            st.dataframe(
+                df_diverg_display.style.map(cor_linha_status, subset=["Status"]),
+                use_container_width=True, hide_index=True,
+            )
+            st.caption(
+                "Diferença > 0 = saiu/retornou garrafeira a mais do que caixas de garrafa fechadas. "
+                "Diferença < 0 = faltou garrafeira pra cobrir as caixas de garrafa."
+            )
+        else:
+            st.caption("Nenhum mapa com garrafa e/ou garrafeira pra comparar ainda.")
