@@ -14,6 +14,7 @@ from comum import (
     coletar_datas_disponiveis, MAPA_APELIDOS, com_apelido, calcular_totais_por_familia,
     classificar_tipo_generico, gdrive_ativo, listar_arquivos_pasta,
     arquivar_dados_antigos, ABAS_ARQUIVAVEIS, NOME_HISTORICO_ARQUIVO,
+    nome_deposito,
 )
 
 st.set_page_config(page_title="AG - Operacional", layout="wide")
@@ -280,7 +281,10 @@ with aba_movimentacao:
                     acumular_historico(resumo_venda[colunas_historico + ["Qtd. Vendida/Movimentada"]], "Venda", chave_historico)
 
                 st.markdown("**Detalhe por produto — Saída (554)**")
-                st.dataframe(resumo_venda.sort_values("Qtd. Vendida/Movimentada", ascending=False), width='stretch')
+                resumo_venda_exibir = resumo_venda.copy()
+                if "Depósito" in resumo_venda_exibir.columns:
+                    resumo_venda_exibir["Depósito"] = resumo_venda_exibir["Depósito"].apply(nome_deposito)
+                st.dataframe(resumo_venda_exibir.sort_values("Qtd. Vendida/Movimentada", ascending=False), width='stretch')
 
             # --- Operação 654 (retorno) ---
             if mov_retorno_654.empty:
@@ -299,7 +303,10 @@ with aba_movimentacao:
                     acumular_historico(resumo_retorno[colunas_historico_ret + ["Qtd_Retorno_654"]], "Retorno654", chave_historico_ret)
 
                 st.markdown("**Detalhe por produto — Retorno (654)**")
-                st.dataframe(resumo_retorno.sort_values("Qtd_Retorno_654", ascending=False), width='stretch')
+                resumo_retorno_exibir = resumo_retorno.copy()
+                if "Depósito" in resumo_retorno_exibir.columns:
+                    resumo_retorno_exibir["Depósito"] = resumo_retorno_exibir["Depósito"].apply(nome_deposito)
+                st.dataframe(resumo_retorno_exibir.sort_values("Qtd_Retorno_654", ascending=False), width='stretch')
 
 
 with aba_cheio:
