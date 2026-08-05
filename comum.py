@@ -39,12 +39,28 @@ def gdrive_ativo() -> bool:
 
 @st.cache_resource(show_spinner=False)
 def _servico_drive():
-    from google.oauth2 import service_account
     from googleapiclient.discovery import build
-    info = dict(st.secrets["gdrive_service_account"])
-    credenciais = service_account.Credentials.from_service_account_info(
-        info, scopes=["https://www.googleapis.com/auth/drive"]
-    )
+
+    if "gdrive_oauth" in st.secrets:
+        # Autentica como a própria conta Google do usuário (tem cota de armazenamento normal).
+        # Necessário pra ESCREVER — contas de serviço não têm cota própria em Drive pessoal.
+        from google.oauth2.credentials import Credentials
+        info = st.secrets["gdrive_oauth"]
+        credenciais = Credentials(
+            token=None,
+            refresh_token=info["refresh_token"],
+            client_id=info["client_id"],
+            client_secret=info["client_secret"],
+            token_uri="https://oauth2.googleapis.com/token",
+            scopes=["https://www.googleapis.com/auth/drive"],
+        )
+    else:
+        # Conta de serviço: funciona só para LEITURA em Drive pessoal (não tem cota pra escrever).
+        from google.oauth2 import service_account
+        info = dict(st.secrets["gdrive_service_account"])
+        credenciais = service_account.Credentials.from_service_account_info(
+            info, scopes=["https://www.googleapis.com/auth/drive"]
+        )
     return build("drive", "v3", credentials=credenciais)
 
 
@@ -190,9 +206,12 @@ def carregar(caminho: Path) -> pd.DataFrame | None:
     return pd.read_excel(caminho)
 
 
-def salvar_aba_historico(nome_aba: str, df: pd.DataFrame) -> None:
+def salvar_aba_historico(nome_aba: str, df: pd.DataFrame, nome_arquivo: str = None) -> None:
+    nome_arquivo = nome_arquivo or NOME_HISTORICO_EXCEL
+    caminho_local = PASTA_PROJETO / nome_arquivo
+
     if gdrive_ativo():
-        historico_atual = _baixar_arquivo_mais_recente_drive(NOME_HISTORICO_EXCEL)
+        historico_atual = _baixar_arquivo_mais_recente_drive(nome_arquivo)
         buffer_saida = io.BytesIO()
         if historico_atual:
             # reabre todas as abas existentes e substitui/adiciona a que mudou
@@ -205,23 +224,26 @@ def salvar_aba_historico(nome_aba: str, df: pd.DataFrame) -> None:
             with pd.ExcelWriter(buffer_saida, engine="openpyxl") as writer:
                 df.to_excel(writer, sheet_name=nome_aba, index=False)
         _subir_bytes_drive(
-            NOME_HISTORICO_EXCEL, buffer_saida.getvalue(),
+            nome_arquivo, buffer_saida.getvalue(),
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         _baixar_arquivo_mais_recente_drive.clear()
         return
 
-    if ARQUIVO_HISTORICO_EXCEL.exists():
-        with pd.ExcelWriter(ARQUIVO_HISTORICO_EXCEL, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+    if caminho_local.exists():
+        with pd.ExcelWriter(caminho_local, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
             df.to_excel(writer, sheet_name=nome_aba, index=False)
     else:
-        with pd.ExcelWriter(ARQUIVO_HISTORICO_EXCEL, engine="openpyxl", mode="w") as writer:
+        with pd.ExcelWriter(caminho_local, engine="openpyxl", mode="w") as writer:
             df.to_excel(writer, sheet_name=nome_aba, index=False)
 
 
-def ler_aba_historico(nome_aba: str) -> pd.DataFrame:
+def ler_aba_historico(nome_aba: str, nome_arquivo: str = None) -> pd.DataFrame:
+    nome_arquivo = nome_arquivo or NOME_HISTORICO_EXCEL
+    caminho_local = PASTA_PROJETO / nome_arquivo
+
     if gdrive_ativo():
-        dados = _baixar_arquivo_mais_recente_drive(NOME_HISTORICO_EXCEL)
+        dados = _baixar_arquivo_mais_recente_drive(nome_arquivo)
         if dados is None:
             return pd.DataFrame()
         try:
@@ -229,12 +251,51 @@ def ler_aba_historico(nome_aba: str) -> pd.DataFrame:
         except ValueError:
             return pd.DataFrame()
 
-    if not ARQUIVO_HISTORICO_EXCEL.exists():
+    if not caminho_local.exists():
         return pd.DataFrame()
     try:
-        return pd.read_excel(ARQUIVO_HISTORICO_EXCEL, sheet_name=nome_aba)
+        return pd.read_excel(caminho_local, sheet_name=nome_aba)
     except ValueError:
         return pd.DataFrame()
+
+
+# =========================================================================
+# ARQUIVAMENTO — mantém historico_ag.xlsx enxuto movendo dados antigos pra
+# um segundo arquivo (historico_ag_arquivo.xlsx), consultável sob demanda
+# =========================================================================
+
+NOME_HISTORICO_ARQUIVO = "historico_ag_arquivo.xlsx"
+
+ABAS_ARQUIVAVEIS = ["Venda", "Retorno654", "Cheio", "Vazio", "VazioPA"]
+
+
+def arquivar_dados_antigos(nome_aba: str, meses_manter: int = 6) -> tuple[int, int]:
+    """Move linhas com Data mais antiga que `meses_manter` meses do historico_ag.xlsx
+    pro historico_ag_arquivo.xlsx, mantendo o arquivo ativo enxuto e rápido.
+    Retorna (linhas que ficaram ativas, linhas movidas pro arquivo)."""
+    historico = ler_aba_historico(nome_aba)
+    if historico.empty or "Data" not in historico.columns:
+        return (len(historico), 0)
+
+    historico = historico.copy()
+    historico["_dt"] = pd.to_datetime(historico["Data"], dayfirst=True, errors="coerce")
+    limite = pd.Timestamp.today() - pd.DateOffset(months=meses_manter)
+
+    recentes = historico[historico["_dt"] >= limite].drop(columns=["_dt"])
+    antigos = historico[historico["_dt"] < limite].drop(columns=["_dt"])
+
+    if antigos.empty:
+        return (len(recentes), 0)
+
+    arquivo_existente = ler_aba_historico(nome_aba, nome_arquivo=NOME_HISTORICO_ARQUIVO)
+    if not arquivo_existente.empty:
+        combinado_arquivo = pd.concat([arquivo_existente, antigos], ignore_index=True).drop_duplicates()
+    else:
+        combinado_arquivo = antigos
+
+    salvar_aba_historico(nome_aba, combinado_arquivo, nome_arquivo=NOME_HISTORICO_ARQUIVO)
+    salvar_aba_historico(nome_aba, recentes)
+    return (len(recentes), len(antigos))
 
 
 def normalizar_codigo(serie: pd.Series) -> pd.Series:
