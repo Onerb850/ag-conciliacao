@@ -375,7 +375,18 @@ with aba_conciliacao_sede:
 
         df_concil_sede["Status"] = df_concil_sede.apply(status_sede, axis=1)
 
-        col_f1, col_f2, col_f3 = st.columns([1, 1, 2])
+        datas_disponiveis_sede = sorted(
+            {d for d in pd.concat([df_concil_sede["Data Saída"], df_concil_sede["Data Retorno"]]) if d != "-"},
+            key=lambda d: pd.to_datetime(d, dayfirst=True, errors="coerce"),
+            reverse=True,
+        )
+
+        col_f0, col_f1, col_f2, col_f3 = st.columns([1, 1, 1, 2])
+        data_filter_sede = col_f0.selectbox(
+            "Filtrar por Data:",
+            ["Todas"] + datas_disponiveis_sede,
+            key="data_sede",
+        )
         status_filter_sede = col_f1.selectbox(
             "Filtrar por Status:",
             ["Todos", "❌ Faltou (não retornou)", "⚠️ Sobrou no Retorno", "🔎 Sem Saída (554)", "⏳ Aguardando Retorno (654)", "✅ Bateu"],
@@ -385,6 +396,10 @@ with aba_conciliacao_sede:
         material_search_sede = col_f3.text_input("🔍 Pesquisar Material/AG:", "", key="material_sede")
 
         df_display_sede = df_concil_sede.copy()
+        if data_filter_sede != "Todas":
+            df_display_sede = df_display_sede[
+                (df_display_sede["Data Saída"] == data_filter_sede) | (df_display_sede["Data Retorno"] == data_filter_sede)
+            ]
         if status_filter_sede != "Todos":
             df_display_sede = df_display_sede[df_display_sede["Status"] == status_filter_sede]
         if mapa_search_sede.strip():
