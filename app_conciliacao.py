@@ -301,9 +301,9 @@ with aba_conciliacao_sede:
         hist_retorno_654["Mapa"] = hist_retorno_654["Mapa"].apply(limpa_mapa)
         retorno_item_agg = hist_retorno_654.groupby(["Mapa", "Material"])["Qtd_Retorno_654"].sum().reset_index()
 
-        # Data mais recente de saída/retorno por mapa, pra exibir na tabela
-        def data_mais_recente_por_mapa(df):
-            if df.empty or "Data" not in df.columns:
+        # Valor mais recente (por data) de uma coluna qualquer, por mapa — usado pra Data e Depósito
+        def valor_mais_recente_por_mapa(df, coluna):
+            if df.empty or "Data" not in df.columns or coluna not in df.columns:
                 return {}
             tmp = df.copy()
             tmp["_dt"] = pd.to_datetime(tmp["Data"], dayfirst=True, errors="coerce")
@@ -311,10 +311,12 @@ with aba_conciliacao_sede:
             if tmp.empty:
                 return {}
             idx = tmp.groupby("Mapa")["_dt"].idxmax()
-            return tmp.loc[idx].set_index("Mapa")["Data"].to_dict()
+            return tmp.loc[idx].set_index("Mapa")[coluna].to_dict()
 
-        data_saida_por_mapa = data_mais_recente_por_mapa(hist_venda_item)
-        data_retorno_por_mapa = data_mais_recente_por_mapa(hist_retorno_654)
+        data_saida_por_mapa = valor_mais_recente_por_mapa(hist_venda_item, "Data")
+        data_retorno_por_mapa = valor_mais_recente_por_mapa(hist_retorno_654, "Data")
+        deposito_saida_por_mapa = valor_mais_recente_por_mapa(hist_venda_item, "Depósito")
+        deposito_retorno_por_mapa = valor_mais_recente_por_mapa(hist_retorno_654, "Depósito")
 
         # Descrição: junta a descrição de quem tiver (Venda e/ou Retorno654), pra nenhum item ficar em branco
         col_desc_venda = next((c for c in ["Descrição", "Descricao"] if c in hist_venda_item.columns), None)
@@ -337,6 +339,8 @@ with aba_conciliacao_sede:
 
         df_concil_sede["Data Saída"] = df_concil_sede["Mapa"].map(data_saida_por_mapa).fillna("-")
         df_concil_sede["Data Retorno"] = df_concil_sede["Mapa"].map(data_retorno_por_mapa).fillna("-")
+        df_concil_sede["Depósito Saída"] = df_concil_sede["Mapa"].map(deposito_saida_por_mapa).fillna("-")
+        df_concil_sede["Depósito Retorno"] = df_concil_sede["Mapa"].map(deposito_retorno_por_mapa).fillna("-")
 
         if desc_por_material is not None:
             df_concil_sede = df_concil_sede.merge(desc_por_material, on="Material", how="left")
@@ -407,7 +411,7 @@ with aba_conciliacao_sede:
         if material_search_sede.strip():
             df_display_sede = df_display_sede[df_display_sede["AG"].str.contains(material_search_sede, case=False, na=False)]
 
-        colunas_exibir_sede = ["Mapa", "Data Saída", "Data Retorno", "AG", "Saída (554)", "Retorno (654)", "Diferença", "Status"]
+        colunas_exibir_sede = ["Mapa", "Data Saída", "Data Retorno", "Depósito Saída", "Depósito Retorno", "AG", "Saída (554)", "Retorno (654)", "Diferença", "Status"]
         df_display_sede = df_display_sede[colunas_exibir_sede].sort_values(by=["Mapa", "AG"])
 
         st.dataframe(
