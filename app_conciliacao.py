@@ -36,6 +36,15 @@ aba_vazio_pa, aba_conciliacao, aba_conciliacao_sede = st.tabs(
     ["Vazio por PA", "Conciliação Mapas PA", "Conciliação Mapas Sede"]
 )
 
+# Roteamento entre as duas conciliações: um mapa só entra na Conciliação Mapas PA se
+# ele foi digitado ali pelo conferente (aba Vazio por PA); todo o resto (mapas que nunca
+# tiveram digitação de PA) cai automaticamente na Conciliação Mapas Sede (554 vs. 654).
+_hist_vazio_pa_bruto = ler_aba_historico("VazioPA")
+if not _hist_vazio_pa_bruto.empty and "Mapa" in _hist_vazio_pa_bruto.columns:
+    MAPAS_COM_CONFERENCIA_PA = set(_hist_vazio_pa_bruto["Mapa"].apply(limpa_mapa).unique())
+else:
+    MAPAS_COM_CONFERENCIA_PA = set()
+
 
 # =========================================================================
 # ABA VAZIO POR PA (conferência física digitada pelo conferente)
@@ -157,7 +166,7 @@ with aba_vazio_pa:
 # =========================================================================
 with aba_conciliacao:
     st.header("⚖️ Conciliação de Mapas PA (Saída vs. Retorno conferente)")
-    st.caption("Cruza as quantidades físicas vendidas na Operação 554 com o que foi conferido no retorno do PA.")
+    st.caption("Cruza as quantidades físicas vendidas na Operação 554 com o que foi conferido no retorno do PA. Só entram aqui mapas que foram digitados na aba 'Vazio por PA' — os demais são conciliados na aba 'Conciliação Mapas Sede' (554 vs. 654).")
 
     hist_venda = ler_aba_historico("Venda")
     hist_vazio_pa = ler_aba_historico("VazioPA")
@@ -174,6 +183,7 @@ with aba_conciliacao:
 
         venda_agg = df_venda_ag.groupby(["Mapa", "Familia"])["Qtd. Vendida/Movimentada"].sum().reset_index()
         venda_agg.rename(columns={"Qtd. Vendida/Movimentada": "Qtd_Saida_Unidades"}, inplace=True)
+        venda_agg = venda_agg[venda_agg["Mapa"].isin(MAPAS_COM_CONFERENCIA_PA)]
 
         # 2. RETORNO DO PA
         hist_vazio_pa["Mapa"] = hist_vazio_pa["Mapa"].apply(limpa_mapa)
@@ -275,7 +285,7 @@ with aba_conciliacao:
 # =========================================================================
 with aba_conciliacao_sede:
     st.header("🏢 Conciliação de Mapas Sede (554 vs. 654)")
-    st.caption("Cruza item a item o que saiu na Operação 554 com o que foi identificado no retorno da Operação 654 — para os mapas que não passam por conferência física no PA.")
+    st.caption("Cruza item a item o que saiu na Operação 554 com o que foi identificado no retorno da Operação 654 — para todo mapa que NÃO foi digitado na aba 'Vazio por PA' (esses ficam na 'Conciliação Mapas PA').")
 
     hist_venda_item = ler_aba_historico("Venda")
     hist_retorno_654 = ler_aba_historico("Retorno654")
@@ -308,6 +318,7 @@ with aba_conciliacao_sede:
             desc_por_material = desc_por_material.drop_duplicates(subset=["Material"], keep="first")
 
         df_concil_sede = pd.merge(venda_item_agg, retorno_item_agg, on=["Mapa", "Material"], how="outer").fillna(0)
+        df_concil_sede = df_concil_sede[~df_concil_sede["Mapa"].isin(MAPAS_COM_CONFERENCIA_PA)]
 
         if desc_por_material is not None:
             df_concil_sede = df_concil_sede.merge(desc_por_material, on="Material", how="left")
