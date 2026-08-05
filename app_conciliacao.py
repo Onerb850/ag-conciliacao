@@ -52,6 +52,14 @@ with aba_vazio_pa:
         st.markdown("**Caixas Físicas que Retornaram**")
         valores_familia_pa = {fam: st.number_input(fam, min_value=0, step=1, key=f"cx_pa_{fam}") for fam in REGRAS_VAZIO}
 
+        st.markdown("**Outros AG (sem conversão — já em unidade final)**")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        chapatex_pa = c1.number_input("Chapatex (Und)", min_value=0, step=1, key="outros_pa_chapatex")
+        pbr1_pa = c2.number_input("Pallet PBR1", min_value=0, step=1, key="outros_pa_pbr1")
+        pbr2_pa = c3.number_input("Pallet PBR2", min_value=0, step=1, key="outros_pa_pbr2")
+        barril30_pa = c4.number_input("Barril 30L", min_value=0, step=1, key="outros_pa_barril30")
+        barril50_pa = c5.number_input("Barril 50L", min_value=0, step=1, key="outros_pa_barril50")
+
         if st.form_submit_button("Salvar conferência"):
             mapas_lista = [m.strip() for m in mapas_texto.split(",") if m.strip()]
             if not mapas_lista:
@@ -76,6 +84,23 @@ with aba_vazio_pa:
                                 "Caixas": qtd_cx,
                                 "Garrafas": qtd_cx * r["garrafas_por_cx"],
                                 "Garrafeiras": gf,
+                                "Unidades": 0,
+                            })
+
+                    for familia_outros, qtd_un in [
+                        ("Chapatex", chapatex_pa), ("Pallet PBR1", pbr1_pa), ("Pallet PBR2", pbr2_pa),
+                        ("Barril 30L", barril30_pa), ("Barril 50L", barril50_pa),
+                    ]:
+                        if qtd_un > 0:
+                            linhas_pa.append({
+                                "Data": data_str_pa,
+                                "PA": pa_escolhido,
+                                "Mapa": mapa_numero,
+                                "Familia": familia_outros,
+                                "Caixas": 0,
+                                "Garrafas": 0,
+                                "Garrafeiras": 0,
+                                "Unidades": qtd_un,
                             })
 
                 if linhas_pa:
@@ -89,10 +114,13 @@ with aba_vazio_pa:
         st.divider()
         st.markdown("### 🚚 Detalhe de Retorno por Mapa")
 
-        colunas_exibicao = ["Data", "PA", "Mapa", "Familia", "Caixas", "Garrafas", "Garrafeiras"]
+        if "Unidades" not in df_vazio_pa.columns:
+            df_vazio_pa["Unidades"] = 0
+
+        colunas_exibicao = ["Data", "PA", "Mapa", "Familia", "Caixas", "Garrafas", "Garrafeiras", "Unidades"]
         df_exibicao = df_vazio_pa[colunas_exibicao].copy()
 
-        for col in ["Caixas", "Garrafas", "Garrafeiras"]:
+        for col in ["Caixas", "Garrafas", "Garrafeiras", "Unidades"]:
             df_exibicao[col] = pd.to_numeric(df_exibicao[col], errors='coerce').fillna(0).astype(int)
 
         df_exibicao["Data_Sort"] = pd.to_datetime(df_exibicao["Data"], format="%d/%m/%Y", errors="coerce")
@@ -101,8 +129,8 @@ with aba_vazio_pa:
         st.dataframe(df_exibicao, width='stretch', hide_index=True)
 
         st.markdown("### 📊 Resumo Físico por PA e Família")
-        resumo_pa_familia = df_vazio_pa.groupby(["PA", "Familia"])[["Caixas", "Garrafas", "Garrafeiras"]].sum().reset_index()
-        resumo_pa_familia[["Caixas", "Garrafas", "Garrafeiras"]] = resumo_pa_familia[["Caixas", "Garrafas", "Garrafeiras"]].astype(int)
+        resumo_pa_familia = df_vazio_pa.groupby(["PA", "Familia"])[["Caixas", "Garrafas", "Garrafeiras", "Unidades"]].sum().reset_index()
+        resumo_pa_familia[["Caixas", "Garrafas", "Garrafeiras", "Unidades"]] = resumo_pa_familia[["Caixas", "Garrafas", "Garrafeiras", "Unidades"]].astype(int)
         st.dataframe(resumo_pa_familia, width='stretch', hide_index=True)
 
         st.divider()
