@@ -16,6 +16,7 @@ from comum import (
     com_apelido,
     GARRAFEIRA_FAMILIA,
     familia_normalizada_600,
+    nome_deposito,
 )
 
 st.set_page_config(page_title="Conciliação de Mapas (AG)", layout="wide")
@@ -339,8 +340,8 @@ with aba_conciliacao_sede:
 
         df_concil_sede["Data Saída"] = df_concil_sede["Mapa"].map(data_saida_por_mapa).fillna("-")
         df_concil_sede["Data Retorno"] = df_concil_sede["Mapa"].map(data_retorno_por_mapa).fillna("-")
-        df_concil_sede["Depósito Saída"] = df_concil_sede["Mapa"].map(deposito_saida_por_mapa).fillna("-")
-        df_concil_sede["Depósito Retorno"] = df_concil_sede["Mapa"].map(deposito_retorno_por_mapa).fillna("-")
+        df_concil_sede["Depósito Saída"] = df_concil_sede["Mapa"].map(deposito_saida_por_mapa).apply(nome_deposito)
+        df_concil_sede["Depósito Retorno"] = df_concil_sede["Mapa"].map(deposito_retorno_por_mapa).apply(nome_deposito)
 
         if desc_por_material is not None:
             df_concil_sede = df_concil_sede.merge(desc_por_material, on="Material", how="left")
