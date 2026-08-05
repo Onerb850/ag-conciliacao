@@ -422,6 +422,7 @@ def cor_linha_status(val):
     if "❌" in str(val): return "color: #501313; font-weight: bold; background-color: #FCEBEB"
     if "⚠️" in str(val): return "color: #5A4000; font-weight: bold; background-color: #FFF4D4"
     if "🔎" in str(val): return "color: #004085; font-weight: bold; background-color: #CCE5FF"
+    if "⏳" in str(val): return "color: #495057; font-weight: bold; background-color: #E9ECEF"
     return ""
 
 
