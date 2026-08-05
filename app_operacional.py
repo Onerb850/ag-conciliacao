@@ -264,11 +264,20 @@ with aba_movimentacao:
             if colunas_desc_mov:
                 desc_material = df_movimentacao.rename(columns={"Item": "Material"}).drop_duplicates(subset=["Material"])[["Material"] + colunas_desc_mov]
 
+            # Colunas que identificam uma linha única no histórico — Depósito NÃO entra aqui,
+            # só como informação extra, senão reprocessar um dia antigo duplicaria a quantidade
+            # em vez de atualizar a linha existente.
+            grupo_mov = ["Item"] + colunas_data_mov + colunas_mapa_mov
+
             # --- Operação 554 (saída) ---
             if mov_venda.empty:
                 st.warning("Após os filtros, nenhuma venda válida de AG foi encontrada para a operação 554.")
             else:
-                resumo_venda = mov_venda.groupby(["Item"] + colunas_data_mov + colunas_mapa_mov + colunas_deposito_mov)["Qtde Entrada"].sum().reset_index().rename(columns={"Item": "Material", "Qtde Entrada": "Qtd. Vendida/Movimentada"})
+                resumo_venda = mov_venda.groupby(grupo_mov)["Qtde Entrada"].sum().reset_index().rename(columns={"Item": "Material", "Qtde Entrada": "Qtd. Vendida/Movimentada"})
+
+                if colunas_deposito_mov:
+                    deposito_lookup_venda = mov_venda.groupby(grupo_mov)["Depósito"].first().reset_index().rename(columns={"Item": "Material"})
+                    resumo_venda = resumo_venda.merge(deposito_lookup_venda, on=["Material"] + colunas_data_mov + colunas_mapa_mov, how="left")
 
                 if desc_material is not None:
                     resumo_venda = resumo_venda.merge(desc_material, on="Material", how="left")
@@ -277,7 +286,7 @@ with aba_movimentacao:
 
                 if "Data" in resumo_venda.columns:
                     colunas_historico = ["Material", "Data"] + colunas_mapa_mov + colunas_deposito_mov + colunas_desc_mov
-                    chave_historico = ["Material", "Data"] + colunas_mapa_mov + colunas_deposito_mov
+                    chave_historico = ["Material", "Data"] + colunas_mapa_mov
                     acumular_historico(resumo_venda[colunas_historico + ["Qtd. Vendida/Movimentada"]], "Venda", chave_historico)
 
                 st.markdown("**Detalhe por produto — Saída (554)**")
@@ -290,7 +299,11 @@ with aba_movimentacao:
             if mov_retorno_654.empty:
                 st.caption("Nenhum retorno (Operação 654) encontrado nesta base.")
             else:
-                resumo_retorno = mov_retorno_654.groupby(["Item"] + colunas_data_mov + colunas_mapa_mov + colunas_deposito_mov)["Qtde Entrada"].sum().reset_index().rename(columns={"Item": "Material", "Qtde Entrada": "Qtd_Retorno_654"})
+                resumo_retorno = mov_retorno_654.groupby(grupo_mov)["Qtde Entrada"].sum().reset_index().rename(columns={"Item": "Material", "Qtde Entrada": "Qtd_Retorno_654"})
+
+                if colunas_deposito_mov:
+                    deposito_lookup_retorno = mov_retorno_654.groupby(grupo_mov)["Depósito"].first().reset_index().rename(columns={"Item": "Material"})
+                    resumo_retorno = resumo_retorno.merge(deposito_lookup_retorno, on=["Material"] + colunas_data_mov + colunas_mapa_mov, how="left")
 
                 if desc_material is not None:
                     resumo_retorno = resumo_retorno.merge(desc_material, on="Material", how="left")
@@ -299,7 +312,7 @@ with aba_movimentacao:
 
                 if "Data" in resumo_retorno.columns:
                     colunas_historico_ret = ["Material", "Data"] + colunas_mapa_mov + colunas_deposito_mov + colunas_desc_mov
-                    chave_historico_ret = ["Material", "Data"] + colunas_mapa_mov + colunas_deposito_mov
+                    chave_historico_ret = ["Material", "Data"] + colunas_mapa_mov
                     acumular_historico(resumo_retorno[colunas_historico_ret + ["Qtd_Retorno_654"]], "Retorno654", chave_historico_ret)
 
                 st.markdown("**Detalhe por produto — Retorno (654)**")
