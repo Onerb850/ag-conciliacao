@@ -546,6 +546,38 @@ def familia_normalizada_600(familia: str) -> str:
     return "600ml" if familia in ("600ml", "Verde 600") else familia
 
 
+# =========================================================================
+# NOMES DE DEPÓSITO — o 02.05.01.csv só traz o código numérico do depósito,
+# o nome vem de uma tabela fixa do Promax (mesma pra todos os armazéns 1/2/3)
+# =========================================================================
+DEPOSITO_NOMES = {
+    "1": "Central",
+    "2": "Varejo",
+    "3": "Analise",
+    "4": "Terceiros",
+    "5": "Faltas",
+    "6": "Devolucao",
+    "8": "Vazio",
+    "20": "PECAS E MATERIAIS FROTA E LOG",
+    "21": "PECAS/MATERIAIS ADM/VENDA/SEG.",
+    "22": "Deposito PNC",
+    "23": "Equipamentos SOPIV",
+    "24": "Vazio",
+}
+
+
+def nome_deposito(codigo) -> str:
+    """Formata o código do depósito com o nome, ex: '1 - Central'. Mantém o código
+    visível mesmo com o nome, e cai pro código sozinho se não reconhecer (ou for vazio/'-')."""
+    if codigo is None or str(codigo).strip() in ("", "-", "nan", "0"):
+        return "-"
+    codigo_str = str(codigo).strip()
+    if codigo_str.endswith(".0"):
+        codigo_str = codigo_str[:-2]
+    nome = DEPOSITO_NOMES.get(codigo_str)
+    return f"{codigo_str} - {nome}" if nome else codigo_str
+
+
 def com_apelido(codigo: str, rotulo_base: str) -> str:
     apelido = MAPA_APELIDOS.get(str(codigo).strip())
     if apelido: return f"{rotulo_base} ({apelido})"
