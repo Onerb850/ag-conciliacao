@@ -13,6 +13,7 @@ from comum import (
     acumular_historico, codigos_fora_do_depara,
     coletar_datas_disponiveis, MAPA_APELIDOS, com_apelido, calcular_totais_por_familia,
     classificar_tipo_generico, gdrive_ativo, listar_arquivos_pasta,
+    arquivar_dados_antigos, ABAS_ARQUIVAVEIS, NOME_HISTORICO_ARQUIVO,
 )
 
 st.set_page_config(page_title="AG - Operacional", layout="wide")
@@ -256,6 +257,7 @@ with aba_movimentacao:
 
             colunas_data_mov = ["Data"] if "Data" in df_movimentacao.columns else []
             colunas_mapa_mov = ["Mapa"] if "Mapa" in df_movimentacao.columns else []
+            colunas_deposito_mov = ["Depósito"] if "Depósito" in df_movimentacao.columns else []
             colunas_desc_mov = [c for c in ["Descrição", "Descricao"] if c in df_movimentacao.columns]
             desc_material = None
             if colunas_desc_mov:
@@ -265,7 +267,7 @@ with aba_movimentacao:
             if mov_venda.empty:
                 st.warning("Após os filtros, nenhuma venda válida de AG foi encontrada para a operação 554.")
             else:
-                resumo_venda = mov_venda.groupby(["Item"] + colunas_data_mov + colunas_mapa_mov)["Qtde Entrada"].sum().reset_index().rename(columns={"Item": "Material", "Qtde Entrada": "Qtd. Vendida/Movimentada"})
+                resumo_venda = mov_venda.groupby(["Item"] + colunas_data_mov + colunas_mapa_mov + colunas_deposito_mov)["Qtde Entrada"].sum().reset_index().rename(columns={"Item": "Material", "Qtde Entrada": "Qtd. Vendida/Movimentada"})
 
                 if desc_material is not None:
                     resumo_venda = resumo_venda.merge(desc_material, on="Material", how="left")
@@ -273,8 +275,8 @@ with aba_movimentacao:
                 resumo_venda["Qtd. Vendida/Movimentada"] = resumo_venda["Qtd. Vendida/Movimentada"].round(0).astype(int)
 
                 if "Data" in resumo_venda.columns:
-                    colunas_historico = ["Material", "Data"] + colunas_mapa_mov + colunas_desc_mov
-                    chave_historico = ["Material", "Data"] + colunas_mapa_mov
+                    colunas_historico = ["Material", "Data"] + colunas_mapa_mov + colunas_deposito_mov + colunas_desc_mov
+                    chave_historico = ["Material", "Data"] + colunas_mapa_mov + colunas_deposito_mov
                     acumular_historico(resumo_venda[colunas_historico + ["Qtd. Vendida/Movimentada"]], "Venda", chave_historico)
 
                 st.markdown("**Detalhe por produto — Saída (554)**")
@@ -284,7 +286,7 @@ with aba_movimentacao:
             if mov_retorno_654.empty:
                 st.caption("Nenhum retorno (Operação 654) encontrado nesta base.")
             else:
-                resumo_retorno = mov_retorno_654.groupby(["Item"] + colunas_data_mov + colunas_mapa_mov)["Qtde Entrada"].sum().reset_index().rename(columns={"Item": "Material", "Qtde Entrada": "Qtd_Retorno_654"})
+                resumo_retorno = mov_retorno_654.groupby(["Item"] + colunas_data_mov + colunas_mapa_mov + colunas_deposito_mov)["Qtde Entrada"].sum().reset_index().rename(columns={"Item": "Material", "Qtde Entrada": "Qtd_Retorno_654"})
 
                 if desc_material is not None:
                     resumo_retorno = resumo_retorno.merge(desc_material, on="Material", how="left")
@@ -292,8 +294,8 @@ with aba_movimentacao:
                 resumo_retorno["Qtd_Retorno_654"] = resumo_retorno["Qtd_Retorno_654"].round(0).astype(int)
 
                 if "Data" in resumo_retorno.columns:
-                    colunas_historico_ret = ["Material", "Data"] + colunas_mapa_mov + colunas_desc_mov
-                    chave_historico_ret = ["Material", "Data"] + colunas_mapa_mov
+                    colunas_historico_ret = ["Material", "Data"] + colunas_mapa_mov + colunas_deposito_mov + colunas_desc_mov
+                    chave_historico_ret = ["Material", "Data"] + colunas_mapa_mov + colunas_deposito_mov
                     acumular_historico(resumo_retorno[colunas_historico_ret + ["Qtd_Retorno_654"]], "Retorno654", chave_historico_ret)
 
                 st.markdown("**Detalhe por produto — Retorno (654)**")
@@ -425,6 +427,38 @@ with aba_dados:
         st.subheader("Estoque Cheio"); st.dataframe(exibir_seguro(df_estoque_cheio), width='stretch')
     if df_ret is not None:
         st.subheader("Cadastro Retornáveis"); st.dataframe(exibir_seguro(df_ret), width='stretch')
+
+    st.divider()
+    st.subheader("🗄️ Manutenção do Histórico")
+    st.caption(
+        "O historico_ag.xlsx acumula uma linha por movimentação, todo dia — depois de muitos meses isso deixa o "
+        "app mais lento pra salvar. Arquivar move os dados mais antigos pra um segundo arquivo "
+        "(historico_ag_arquivo.xlsx), sem apagar nada — só sai da planilha ativa."
+    )
+
+    col_arq1, col_arq2 = st.columns([1, 2])
+    meses_manter = col_arq1.number_input("Manter os últimos X meses ativos", min_value=1, max_value=36, value=6, step=1)
+
+    if col_arq2.button("📦 Arquivar dados mais antigos que isso, agora", type="primary"):
+        resultado_arquivamento = []
+        for aba_arquivavel in ABAS_ARQUIVAVEIS:
+            ativos, arquivados = arquivar_dados_antigos(aba_arquivavel, meses_manter=int(meses_manter))
+            resultado_arquivamento.append((aba_arquivavel, ativos, arquivados))
+        st.success("Arquivamento concluído:")
+        for aba_nome, ativos, arquivados in resultado_arquivamento:
+            if arquivados > 0:
+                st.write(f"- **{aba_nome}**: {arquivados} linha(s) movida(s) pro arquivo, {ativos} continuam ativas")
+            else:
+                st.write(f"- **{aba_nome}**: nada pra arquivar ({ativos} linha(s) já dentro do período)")
+
+    with st.expander("📚 Consultar histórico arquivado (dados antigos)"):
+        aba_consulta = st.selectbox("Qual histórico consultar:", ABAS_ARQUIVAVEIS, key="aba_consulta_arquivo")
+        df_arquivo = ler_aba_historico(aba_consulta, nome_arquivo=NOME_HISTORICO_ARQUIVO)
+        if df_arquivo.empty:
+            st.info("Nada arquivado ainda pra essa aba.")
+        else:
+            st.caption(f"{len(df_arquivo)} linha(s) arquivada(s).")
+            st.dataframe(exibir_seguro(df_arquivo), width='stretch')
 
 
 # =========================================================================
