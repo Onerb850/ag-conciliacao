@@ -540,6 +540,19 @@ MAPA_APELIDOS = {
 # padronizar_familia() não consegue classificá-la pela descrição — precisa saber pelo código.
 GARRAFEIRA_FAMILIA = {"863059": "300ml", "899599": "600ml", "188005": "1L"}
 
+# Rótulo exibido nos formulários de digitação (Vazio, Vazio por PA) — a família continua
+# sendo "300ml"/"600ml"/"Verde 600"/"1L" por trás, isso é só o texto que aparece na tela.
+RUTULO_FAMILIA_VAZIO = {
+    "300ml": "LITRINHO",
+    "600ml": "600 AMBAR",
+    "Verde 600": "600 VERDE",
+    "1L": "LITRÃO",
+}
+
+
+def rotulo_familia_vazio(familia: str) -> str:
+    return RUTULO_FAMILIA_VAZIO.get(familia, familia)
+
 
 def familia_normalizada_600(familia: str) -> str:
     """Agrupa 600ml e Verde 600 numa família só — a mesma garrafeira física (899599) serve às duas cores."""
