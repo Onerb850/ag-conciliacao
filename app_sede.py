@@ -3,14 +3,15 @@ import pandas as pd
 from datetime import date
 
 from comum import (
+    ARQUIVO_DE_MATERIAL,
+    carregar,
     ler_aba_historico,
     salvar_aba_historico,
     acumular_historico,
     limpa_mapa,
-    padronizar_familia,
+    normalizar_codigo,
     fator_conversao_caixas,
     cor_linha_status,
-    classificar_tipo_generico,
     formata_qtd_fisica,
     formata_diferenca_fisica,
     com_apelido,
@@ -18,13 +19,15 @@ from comum import (
     GARRAFEIRA_FAMILIA,
     familia_normalizada_600,
     nome_deposito,
+    montar_lookup_ag_por_codigo,
+    familia_tipo_por_codigo,
 )
 
 st.set_page_config(page_title="Conciliação de Mapas (AG)", layout="wide")
 st.title("⚖️ Conciliação de Mapas (AG)")
 st.caption(
     "Este app só lê o histórico já salvo (historico_ag.xlsx) — não processa CSVs brutos, por isso é bem mais leve. "
-    "Pra alimentar Venda (554/654), use o app 'Operacional'."
+    "Pra alimentar Venda (Previsto x Realizado), use o app 'Operacional'."
 )
 
 REGRAS_VAZIO = {
@@ -34,13 +37,22 @@ REGRAS_VAZIO = {
     "1L": {"garrafas_por_cx": 12, "garrafeiras_por_cx": 1},
 }
 
+# Lookup Código -> (Familia, Tipo), montado a partir da descrição mestre do De
+# Material.xlsx — é lido aqui direto (app leve, arquivo pequeno) pra classificar
+# os itens de Venda/Retorno pelo Código, em vez de interpretar a descrição
+# abreviada de cada relatório (mais confiável, mesma fonte usada no app Operacional).
+df_de_material = carregar(ARQUIVO_DE_MATERIAL)
+if df_de_material is not None and "Promax" in df_de_material.columns:
+    df_de_material["Promax"] = normalizar_codigo(df_de_material["Promax"])
+lookup_ag = montar_lookup_ag_por_codigo(df_de_material) if df_de_material is not None else {}
+
 aba_vazio_pa, aba_conciliacao, aba_conciliacao_sede = st.tabs(
     ["Vazio por PA", "Conciliação Mapas PA", "Conciliação Mapas Sede"]
 )
 
 # Roteamento entre as duas conciliações: um mapa só entra na Conciliação Mapas PA se
 # ele foi digitado ali pelo conferente (aba Vazio por PA); todo o resto (mapas que nunca
-# tiveram digitação de PA) cai automaticamente na Conciliação Mapas Sede (554 vs. 654).
+# tiveram digitação de PA) cai automaticamente na Conciliação Mapas Sede (Previsto vs. Realizado).
 _hist_vazio_pa_bruto = ler_aba_historico("VazioPA")
 if not _hist_vazio_pa_bruto.empty and "Mapa" in _hist_vazio_pa_bruto.columns:
     MAPAS_COM_CONFERENCIA_PA = set(_hist_vazio_pa_bruto["Mapa"].apply(limpa_mapa).unique())
@@ -167,17 +179,18 @@ with aba_vazio_pa:
 # =========================================================================
 with aba_conciliacao:
     st.header("⚖️ Conciliação de Mapas PA (Saída vs. Retorno conferente)")
-    st.caption("Cruza as quantidades físicas vendidas na Operação 554 com o que foi conferido no retorno do PA. Só entram aqui mapas que foram digitados na aba 'Vazio por PA' — os demais são conciliados na aba 'Conciliação Mapas Sede' (554 vs. 654).")
+    st.caption("Cruza as quantidades físicas previstas (saída) com o que foi conferido no retorno do PA. Só entram aqui mapas que foram digitados na aba 'Vazio por PA' — os demais são conciliados na aba 'Conciliação Mapas Sede'.")
 
     hist_venda = ler_aba_historico("Venda")
     hist_vazio_pa = ler_aba_historico("VazioPA")
 
     if hist_venda.empty or hist_vazio_pa.empty:
-        st.info("⚠️ Aguardando dados. É necessário ter histórico de Venda (Operação 554) e de Retorno (Vazio por PA) salvos para fazer o cruzamento.")
+        st.info("⚠️ Aguardando dados. É necessário ter histórico de Venda (Previsto) e de Retorno (Vazio por PA) salvos para fazer o cruzamento.")
     else:
-        # 1. VENDA (SAÍDA)
-        col_desc = next((c for c in ["Descrição", "Descricao"] if c in hist_venda.columns), None)
-        hist_venda["Familia"] = hist_venda[col_desc].astype(str).apply(padronizar_familia) if col_desc else "Outro"
+        # 1. VENDA (SAÍDA) — classificada pelo Código do Material via De Material.xlsx,
+        # não pela descrição abreviada do relatório (mais confiável).
+        hist_venda = hist_venda.copy()
+        hist_venda["Familia"] = hist_venda["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag)[0])
 
         df_venda_ag = hist_venda[hist_venda["Familia"] != "Outro"].copy()
         df_venda_ag["Mapa"] = df_venda_ag["Mapa"].apply(limpa_mapa)
@@ -206,7 +219,7 @@ with aba_conciliacao:
         # 3. CRUZAMENTO (MERGE) E CÁLCULO FÍSICO
         df_concil = pd.merge(venda_agg, vazio_agg, on=["Mapa", "Familia"], how="outer").fillna(0)
 
-        # Se uma família saiu na 554 mas o conferente não digitou nenhum retorno pra ela
+        # Se uma família saiu na Previsto mas o conferente não digitou nenhum retorno pra ela
         # (situação real de "faltou"), a linha continua no PA correto do mapa (em vez de
         # cair num rótulo genérico "Aguardando Retorno" que ficava invisível ao filtrar
         # por um PA específico).
@@ -248,9 +261,9 @@ with aba_conciliacao:
         df_concil["Diferença"] = df_concil.apply(lambda r: formata_dif(r["Diferença_Unidades"], r["Familia"]), axis=1)
 
         # LÓGICA DE STATUS — 3 regras de negócio:
-        # 1) saiu na 554 e o conferente não digitou retorno -> Faltou AG (dif < 0)
-        # 2) não saiu e não foi digitado -> não gera linha nenhuma (sem problema)
-        # 3) não saiu (ou saiu menos) e o conferente digitou algo -> Sobrou AG (dif > 0)
+        # 1. Saiu (Previsto) e o conferente não digitou (ou digitou menos)  -> Faltou AG
+        # 2. Não saiu e o conferente também não digitou                     -> nenhuma linha é gerada (ok)
+        # 3. Não saiu e o conferente digitou (ou digitou mais que saiu)     -> Sobrou AG
         def status_conciliacao(row):
             dif = row["Diferença_Unidades"]
 
@@ -258,7 +271,7 @@ with aba_conciliacao:
                 return "✅ Bateu"
             elif dif < 0:
                 return "❌ Faltou AG"
-            else:  # dif > 0 — retornou mais do que saiu, incluindo quando não saiu nada
+            else:  # dif > 0 (retornou mais do que saiu, incluindo quando não saiu nada)
                 return "⚠️ Sobrou AG"
 
         df_concil["Status"] = df_concil.apply(status_conciliacao, axis=1)
@@ -290,21 +303,22 @@ with aba_conciliacao:
             use_container_width=True, hide_index=True
         )
 
-        st.caption("Nota: a diferença é sempre exibida na menor unidade física (garrafas ou unidades soltas). Faltou AG = saiu e não retornou (ou retornou menos); Sobrou AG = retornou mais do que saiu, incluindo quando não havia saída registrada pra aquela família nesse mapa.")
+        st.caption("Nota 1: Mapas com status 'Faltou AG' saíram no Previsto e não tiveram (ou tiveram menos) retorno digitado na aba 'Vazio por PA'.")
+        st.caption("Nota 2: Mapas com status 'Sobrou AG' foram conferidos no PA com quantidade maior do que o Previsto (incluindo casos em que nada saiu, mas algo foi digitado). A diferença é sempre exibida na menor unidade física (garrafas ou unidades soltas).")
 
 
 # =========================================================================
-# ABA DE CONCILIAÇÃO POR MAPA SEDE (554 x 654 — sem conferente físico)
+# ABA DE CONCILIAÇÃO POR MAPA SEDE (Previsto x Realizado — sem conferente físico)
 # =========================================================================
 with aba_conciliacao_sede:
-    st.header("🏢 Conciliação de Mapas Sede (554 vs. 654)")
-    st.caption("Cruza item a item o que saiu na Operação 554 com o que foi identificado no retorno da Operação 654 — para todo mapa que NÃO foi digitado na aba 'Vazio por PA' (esses ficam na 'Conciliação Mapas PA').")
+    st.header("🏢 Conciliação de Mapas Sede (Previsto vs. Realizado)")
+    st.caption("Cruza item a item o que estava previsto (saída) com o que foi realizado (retorno) — para todo mapa que NÃO foi digitado na aba 'Vazio por PA' (esses ficam na 'Conciliação Mapas PA').")
 
     hist_venda_item = ler_aba_historico("Venda")
     hist_retorno_654 = ler_aba_historico("Retorno654")
 
     if hist_venda_item.empty or hist_retorno_654.empty:
-        st.info("⚠️ Aguardando dados. É necessário ter histórico de Venda (554) e Retorno (654) salvos para cruzar.")
+        st.info("⚠️ Aguardando dados. É necessário ter histórico de Venda (Previsto) e Retorno (Realizado) salvos para cruzar.")
     else:
         hist_venda_item = hist_venda_item.copy()
         hist_venda_item["Mapa"] = hist_venda_item["Mapa"].apply(limpa_mapa)
@@ -368,9 +382,12 @@ with aba_conciliacao_sede:
         df_concil_sede["Qtd_Retorno_654"] = df_concil_sede["Qtd_Retorno_654"].round(0).astype(int)
         df_concil_sede["Diferença_Num"] = df_concil_sede["Qtd_Retorno_654"] - df_concil_sede["Qtd_Saida_554"]
 
-        # Classifica o tipo físico do item (Garrafa/Garrafeira/Barril/Outro) pra decidir cx+gf vs. un
-        df_concil_sede["Tipo"] = df_concil_sede["Desc_AG"].fillna("").apply(classificar_tipo_generico) if "Desc_AG" in df_concil_sede.columns else "Outro"
-        df_concil_sede["Familia"] = df_concil_sede["Desc_AG"].fillna("").apply(padronizar_familia) if "Desc_AG" in df_concil_sede.columns else "Outro"
+        # Classifica o item pelo Código (De Material.xlsx) — Tipo (Garrafa/Garrafeira/Barril/
+        # Outro) e Familia (300ml/600ml/Verde 600/1L/...), em vez de interpretar a descrição
+        # abreviada do relatório (mais confiável, mesma fonte usada em toda a conciliação).
+        familia_tipo_serie = df_concil_sede["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
+        df_concil_sede["Familia"] = familia_tipo_serie.apply(lambda ft: ft[0])
+        df_concil_sede["Tipo"] = familia_tipo_serie.apply(lambda ft: ft[1])
 
         df_concil_sede["Saída (554)"] = df_concil_sede.apply(lambda r: formata_qtd_fisica(r["Qtd_Saida_554"], r["Tipo"], r["Familia"]), axis=1)
         df_concil_sede["Retorno (654)"] = df_concil_sede.apply(lambda r: formata_qtd_fisica(r["Qtd_Retorno_654"], r["Tipo"], r["Familia"]), axis=1)
@@ -432,7 +449,7 @@ with aba_conciliacao_sede:
             use_container_width=True, hide_index=True,
         )
 
-        st.caption("Nota: comparação item a item na unidade bruta da movimentação (sem converter pra caixa) — diferente da Conciliação Mapas PA, que usa a contagem física convertida pelo conferente.")
+        st.caption("Nota: comparação item a item na unidade bruta do relatório (sem converter pra caixa) — diferente da Conciliação Mapas PA, que usa a contagem física convertida pelo conferente.")
 
         # =================================================================
         # CONFERÊNCIA CRUZADA: GARRAFA × GARRAFEIRA, POR MAPA
