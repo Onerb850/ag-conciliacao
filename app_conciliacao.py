@@ -53,11 +53,11 @@ else:
 with aba_vazio_pa:
     st.caption("Conferência do vazio por PA e mapa. Alimenta a Conciliação Mapas PA, ao lado.")
 
-    with st.form("form_vazio_pa"):
+    with st.form("form_vazio_pa", clear_on_submit=True):
         col_data, col_pa, col_mapa = st.columns(3)
         data_pa = col_data.date_input("Data da Descarga", value=date.today(), key="data_vazio_pa")
         pa_escolhido = col_pa.selectbox("PA", ["Tianguá", "Granja"], key="pa_vazio_pa")
-        mapas_texto = col_mapa.text_input("Número(s) do Mapa (separe por vírgula)")
+        mapa_texto = col_mapa.text_input("Número do Mapa (um por vez)")
 
         st.markdown("**Caixas Físicas que Retornaram**")
         valores_familia_pa = {fam: st.number_input(fam, min_value=0, step=1, key=f"cx_pa_{fam}") for fam in REGRAS_VAZIO}
@@ -71,51 +71,50 @@ with aba_vazio_pa:
         barril50_pa = c5.number_input("Barril 50L", min_value=0, step=1, key="outros_pa_barril50")
 
         if st.form_submit_button("Salvar conferência"):
-            mapas_lista = [m.strip() for m in mapas_texto.split(",") if m.strip()]
-            if not mapas_lista:
-                st.error("Informe pelo menos um mapa antes de salvar.")
+            mapa_numero = limpa_mapa(mapa_texto.strip())
+            if not mapa_texto.strip():
+                st.error("Informe o número do mapa antes de salvar.")
+            elif "," in mapa_texto:
+                st.error("Um mapa por vez — se tiver mais de um, salve cada um separadamente (o formulário limpa sozinho depois de salvar).")
             else:
                 data_str_pa = data_pa.strftime("%d/%m/%Y")
                 gf_600 = valores_familia_pa.get("600ml", 0) + valores_familia_pa.get("Verde 600", 0)
                 linhas_pa = []
 
-                for mapa_numero in mapas_lista:
-                    mapa_numero = limpa_mapa(mapa_numero)
+                for familia, qtd_cx in valores_familia_pa.items():
+                    if qtd_cx > 0:
+                        r = REGRAS_VAZIO[familia]
+                        gf = gf_600 if familia == "600ml" else (0 if familia == "Verde 600" else qtd_cx * r["garrafeiras_por_cx"])
+                        linhas_pa.append({
+                            "Data": data_str_pa,
+                            "PA": pa_escolhido,
+                            "Mapa": mapa_numero,
+                            "Familia": familia,
+                            "Caixas": qtd_cx,
+                            "Garrafas": qtd_cx * r["garrafas_por_cx"],
+                            "Garrafeiras": gf,
+                            "Unidades": 0,
+                        })
 
-                    for familia, qtd_cx in valores_familia_pa.items():
-                        if qtd_cx > 0:
-                            r = REGRAS_VAZIO[familia]
-                            gf = gf_600 if familia == "600ml" else (0 if familia == "Verde 600" else qtd_cx * r["garrafeiras_por_cx"])
-                            linhas_pa.append({
-                                "Data": data_str_pa,
-                                "PA": pa_escolhido,
-                                "Mapa": mapa_numero,
-                                "Familia": familia,
-                                "Caixas": qtd_cx,
-                                "Garrafas": qtd_cx * r["garrafas_por_cx"],
-                                "Garrafeiras": gf,
-                                "Unidades": 0,
-                            })
-
-                    for familia_outros, qtd_un in [
-                        ("Chapatex", chapatex_pa), ("Pallet PBR1", pbr1_pa), ("Pallet PBR2", pbr2_pa),
-                        ("Barril 30L", barril30_pa), ("Barril 50L", barril50_pa),
-                    ]:
-                        if qtd_un > 0:
-                            linhas_pa.append({
-                                "Data": data_str_pa,
-                                "PA": pa_escolhido,
-                                "Mapa": mapa_numero,
-                                "Familia": familia_outros,
-                                "Caixas": 0,
-                                "Garrafas": 0,
-                                "Garrafeiras": 0,
-                                "Unidades": qtd_un,
-                            })
+                for familia_outros, qtd_un in [
+                    ("Chapatex", chapatex_pa), ("Pallet PBR1", pbr1_pa), ("Pallet PBR2", pbr2_pa),
+                    ("Barril 30L", barril30_pa), ("Barril 50L", barril50_pa),
+                ]:
+                    if qtd_un > 0:
+                        linhas_pa.append({
+                            "Data": data_str_pa,
+                            "PA": pa_escolhido,
+                            "Mapa": mapa_numero,
+                            "Familia": familia_outros,
+                            "Caixas": 0,
+                            "Garrafas": 0,
+                            "Garrafeiras": 0,
+                            "Unidades": qtd_un,
+                        })
 
                 if linhas_pa:
                     acumular_historico(pd.DataFrame(linhas_pa), "VazioPA", ["Data", "PA", "Mapa", "Familia"])
-                    st.success(f"✅ Retorno do(s) mapa(s) {', '.join(mapas_lista)} salvo com sucesso!")
+                    st.success(f"✅ Retorno do mapa {mapa_numero} salvo com sucesso!")
                 else:
                     st.warning("Nenhuma quantidade foi informada para salvar.")
 
