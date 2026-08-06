@@ -5,21 +5,21 @@ from matplotlib.colors import LinearSegmentedColormap
 
 from comum import (
     PASTA_PROJETO, ARQUIVO_DE_MATERIAL, ARQUIVO_PRESTACAO, ARQUIVO_COMODATO,
-    ARQUIVO_MOVIMENTACAO, ARQUIVO_RET,
+    ARQUIVO_MAPAS_AG, ARQUIVO_RET,
     carregar, salvar_aba_historico, ler_aba_historico, normalizar_codigo,
-    limpa_mapa, numerizar, parse_qtde_entrada, exibir_seguro,
+    limpa_mapa, numerizar, exibir_seguro,
     padronizar_familia, fator_conversao_caixas, converter_cheio_em_ag,
     localizar_grade_mais_recente, extrair_data_do_nome_arquivo,
     acumular_historico, codigos_fora_do_depara,
     coletar_datas_disponiveis, MAPA_APELIDOS, com_apelido, calcular_totais_por_familia,
     classificar_tipo_generico, gdrive_ativo, listar_arquivos_pasta,
     arquivar_dados_antigos, ABAS_ARQUIVAVEIS, NOME_HISTORICO_ARQUIVO,
-    nome_deposito,
+    nome_deposito, montar_lookup_ag_por_codigo,
 )
 
 st.set_page_config(page_title="AG - Operacional", layout="wide")
 st.title("Ativos de Giro (AG) — Operacional")
-st.caption("Painel, Venda (554/654), Cheio e Vazio (cada um já com sua própria Variação por data). Vazio por PA e Conciliação de Mapas ficam no app separado 'Conciliação de Mapas'.")
+st.caption("Painel, Venda (Previsto x Realizado), Cheio e Vazio (cada um já com sua própria Variação por data). Vazio por PA e Conciliação de Mapas ficam no app separado 'Conciliação de Mapas'.")
 
 # --- CARREGAMENTO DE ARQUIVOS (SIDEBAR) ---
 with st.sidebar:
@@ -67,24 +67,40 @@ with st.sidebar:
             st.caption(f"{duplicados['Promax'].nunique()} código(s) duplicado(s) no de-para.")
         df_depara_dedup = df_de_material.drop_duplicates(subset=["Promax"], keep="first")
 
+    # Lookup Código -> (Familia, Tipo), montado a partir da descrição mestre do De
+    # Material.xlsx — usado em vez de tentar interpretar a descrição abreviada de
+    # cada relatório de movimentação (mais confiável, um só lugar pra manter).
+    lookup_ag = montar_lookup_ag_por_codigo(df_de_material) if df_de_material is not None else {}
+
     alertas_fora_depara = []
 
-    df_prestacao = None
+    # --- 03.07.13: Previsto (saída) x Realizado (retorno), por Mapa+Material ---
+    df_mapas_ag = None
     try:
-        df_prestacao = carregar(ARQUIVO_PRESTACAO)
-        if df_prestacao is not None:
-            df_prestacao["Material"] = normalizar_codigo(df_prestacao["Material"])
-            df_prestacao["Mapa"] = normalizar_codigo(df_prestacao["Mapa"])
-            st.success(f"{ARQUIVO_PRESTACAO.name} — mapas da rota ({len(df_prestacao)} linhas)")
+        df_mapas_ag = carregar(ARQUIVO_MAPAS_AG)
+        if df_mapas_ag is not None:
+            df_mapas_ag.columns = df_mapas_ag.columns.str.strip()
+            if "Material" in df_mapas_ag.columns:
+                df_mapas_ag["Material"] = df_mapas_ag["Material"].apply(limpa_mapa)
+            if "Mapa" in df_mapas_ag.columns:
+                df_mapas_ag["Mapa"] = df_mapas_ag["Mapa"].apply(limpa_mapa)
+            if "Descricao" in df_mapas_ag.columns:
+                df_mapas_ag["Descricao"] = df_mapas_ag["Descricao"].astype(str).str.strip()
+            for col_qtd in ["P Vazia", "R Vazio"]:
+                if col_qtd in df_mapas_ag.columns:
+                    df_mapas_ag[col_qtd] = pd.to_numeric(df_mapas_ag[col_qtd], errors="coerce").fillna(0)
+            st.success(f"{ARQUIVO_MAPAS_AG.name} — mapas/AG ({len(df_mapas_ag)} linhas)")
+        else:
+            st.error(f"Não encontrei '{ARQUIVO_MAPAS_AG.name}'.")
     except Exception as e:
-        st.error(f"Erro ao ler '{ARQUIVO_PRESTACAO.name}': {e}")
+        st.error(f"Erro ao ler '{ARQUIVO_MAPAS_AG.name}': {e}")
 
-    if df_prestacao is not None and df_de_material is not None:
-        resumo_faltantes = codigos_fora_do_depara(df_prestacao, "Material", df_de_material, ARQUIVO_PRESTACAO.name)
+    if df_mapas_ag is not None and df_de_material is not None and "Material" in df_mapas_ag.columns:
+        resumo_faltantes = codigos_fora_do_depara(df_mapas_ag, "Material", df_de_material, ARQUIVO_MAPAS_AG.name)
         if resumo_faltantes is not None:
             alertas_fora_depara.append(resumo_faltantes)
         codigos_validos = set(df_de_material["Promax"].unique())
-        df_prestacao = df_prestacao[df_prestacao["Material"].isin(codigos_validos)]
+        df_mapas_ag = df_mapas_ag[df_mapas_ag["Material"].isin(codigos_validos)]
 
     df_comodato = None
     try:
@@ -94,23 +110,6 @@ with st.sidebar:
             if "Codigo Produto" in df_comodato.columns:
                 df_comodato["Codigo Produto"] = normalizar_codigo(df_comodato["Codigo Produto"])
             st.success(f"{ARQUIVO_COMODATO.name} — comodato ({len(df_comodato)} linhas)")
-    except Exception as e:
-        pass
-
-    df_movimentacao = None
-    try:
-        df_movimentacao = carregar(ARQUIVO_MOVIMENTACAO)
-        if df_movimentacao is not None:
-            df_movimentacao.columns = df_movimentacao.columns.str.strip()
-            if "Item" in df_movimentacao.columns:
-                df_movimentacao["Item"] = normalizar_codigo(df_movimentacao["Item"])
-            if "Mapa" in df_movimentacao.columns:
-                df_movimentacao["Mapa"] = normalizar_codigo(df_movimentacao["Mapa"])
-            if "Código Operação" in df_movimentacao.columns:
-                df_movimentacao["Código Operação"] = normalizar_codigo(df_movimentacao["Código Operação"])
-            if "Qtde Entrada" in df_movimentacao.columns:
-                df_movimentacao["Qtde Entrada"] = parse_qtde_entrada(df_movimentacao["Qtde Entrada"])
-            st.success(f"{ARQUIVO_MOVIMENTACAO.name} — movimentação ({len(df_movimentacao)} linhas)")
     except Exception as e:
         pass
 
@@ -235,88 +234,71 @@ aba_painel, aba_movimentacao, aba_cheio, aba_vazio, aba_dados = st.tabs(
 
 
 with aba_movimentacao:
-    st.caption("Movimentação (vendido/retornado) por AG — Filtrado exclusivamente pelos códigos presentes no 'De Material'.")
+    st.caption("Previsto (P Vazia) x Realizado (R Vazio) por AG, vindo do relatório 03.07.13 — filtrado exclusivamente pelos códigos presentes no 'De Material'.")
 
     st.markdown("#### 📈 Variação (histórico por dia)")
-    renderizar_mapa_calor("Venda", "Qtd. Vendida/Movimentada", "Venda (Operação 554)")
+    renderizar_mapa_calor("Venda", "Qtd. Vendida/Movimentada", "Venda (Previsto)")
     st.divider()
     st.markdown("#### 📋 Resumo (arquivo carregado agora)")
 
-    if df_movimentacao is not None:
-        colunas_necessarias = {"Item", "Código Operação", "Qtde Entrada"}
-        if colunas_necessarias.issubset(df_movimentacao.columns):
-            codigo_limpo = df_movimentacao["Código Operação"].astype(str).str.extract(r"(\d+)")[0]
-            mov_venda = df_movimentacao[codigo_limpo == "554"]
-            mov_retorno_654 = df_movimentacao[codigo_limpo == "654"]
+    if df_mapas_ag is not None:
+        colunas_necessarias = {"Material", "Mapa", "P Vazia", "R Vazio"}
+        if colunas_necessarias.issubset(df_mapas_ag.columns):
+            colunas_data_mov = ["Data"] if "Data" in df_mapas_ag.columns else []
+            colunas_mapa_mov = ["Mapa"] if "Mapa" in df_mapas_ag.columns else []
+            colunas_desc_mov = ["Descricao"] if "Descricao" in df_mapas_ag.columns else []
 
-            codigos_validos_ag = set(df_depara_dedup["Promax"].unique()) if df_depara_dedup is not None else None
-            if codigos_validos_ag is not None:
-                if not mov_venda.empty:
-                    mov_venda = mov_venda[mov_venda["Item"].isin(codigos_validos_ag)]
-                if not mov_retorno_654.empty:
-                    mov_retorno_654 = mov_retorno_654[mov_retorno_654["Item"].isin(codigos_validos_ag)]
-
-            colunas_data_mov = ["Data"] if "Data" in df_movimentacao.columns else []
-            colunas_mapa_mov = ["Mapa"] if "Mapa" in df_movimentacao.columns else []
-            colunas_deposito_mov = ["Depósito"] if "Depósito" in df_movimentacao.columns else []
-            colunas_desc_mov = [c for c in ["Descrição", "Descricao"] if c in df_movimentacao.columns]
             desc_material = None
             if colunas_desc_mov:
-                desc_material = df_movimentacao.rename(columns={"Item": "Material"}).drop_duplicates(subset=["Material"])[["Material"] + colunas_desc_mov]
+                desc_material = (
+                    df_mapas_ag.drop_duplicates(subset=["Material"])[["Material"] + colunas_desc_mov]
+                    .rename(columns={"Descricao": "Descrição"})
+                )
 
-            grupo_mov = ["Item"] + colunas_data_mov + colunas_mapa_mov
+            grupo_mov = ["Material"] + colunas_data_mov + colunas_mapa_mov
 
-            # --- Operação 554 (saída) ---
-            if mov_venda.empty:
-                st.warning("Após os filtros, nenhuma venda válida de AG foi encontrada para a operação 554.")
+            # --- Saída (Previsto = P Vazia) ---
+            if df_mapas_ag["P Vazia"].sum() == 0:
+                st.warning("Após os filtros, nenhuma saída válida de AG foi encontrada (P Vazia).")
             else:
-                resumo_venda = mov_venda.groupby(grupo_mov)["Qtde Entrada"].sum().reset_index().rename(columns={"Item": "Material", "Qtde Entrada": "Qtd. Vendida/Movimentada"})
-
-                if colunas_deposito_mov:
-                    deposito_lookup_venda = mov_venda.groupby(grupo_mov)["Depósito"].first().reset_index().rename(columns={"Item": "Material"})
-                    resumo_venda = resumo_venda.merge(deposito_lookup_venda, on=["Material"] + colunas_data_mov + colunas_mapa_mov, how="left")
-
+                resumo_venda = df_mapas_ag.groupby(grupo_mov)["P Vazia"].sum().reset_index().rename(
+                    columns={"Material": "Material", "P Vazia": "Qtd. Vendida/Movimentada"}
+                )
                 if desc_material is not None:
                     resumo_venda = resumo_venda.merge(desc_material, on="Material", how="left")
-
                 resumo_venda["Qtd. Vendida/Movimentada"] = resumo_venda["Qtd. Vendida/Movimentada"].round(0).astype(int)
 
                 if "Data" in resumo_venda.columns:
-                    colunas_historico = ["Material", "Data"] + colunas_mapa_mov + colunas_deposito_mov + colunas_desc_mov
+                    colunas_historico = ["Material", "Data"] + colunas_mapa_mov + (["Descrição"] if desc_material is not None else [])
                     chave_historico = ["Material", "Data"] + colunas_mapa_mov
                     acumular_historico(resumo_venda[colunas_historico + ["Qtd. Vendida/Movimentada"]], "Venda", chave_historico)
 
-                st.markdown("**Detalhe por produto — Saída (554)**")
-                resumo_venda_exibir = resumo_venda.copy()
-                if "Depósito" in resumo_venda_exibir.columns:
-                    resumo_venda_exibir["Depósito"] = resumo_venda_exibir["Depósito"].apply(nome_deposito)
-                st.dataframe(resumo_venda_exibir.sort_values("Qtd. Vendida/Movimentada", ascending=False), width='stretch')
+                st.markdown("**Detalhe por produto — Saída (Previsto)**")
+                st.dataframe(resumo_venda.sort_values("Qtd. Vendida/Movimentada", ascending=False), width='stretch')
 
-            # --- Operação 654 (retorno) ---
-            if mov_retorno_654.empty:
-                st.caption("Nenhum retorno (Operação 654) encontrado nesta base.")
+            # --- Retorno (Realizado = R Vazio) ---
+            if df_mapas_ag["R Vazio"].sum() == 0:
+                st.caption("Nenhum retorno (Realizado) encontrado nesta base.")
             else:
-                resumo_retorno = mov_retorno_654.groupby(grupo_mov)["Qtde Entrada"].sum().reset_index().rename(columns={"Item": "Material", "Qtde Entrada": "Qtd_Retorno_654"})
-
-                if colunas_deposito_mov:
-                    deposito_lookup_retorno = mov_retorno_654.groupby(grupo_mov)["Depósito"].first().reset_index().rename(columns={"Item": "Material"})
-                    resumo_retorno = resumo_retorno.merge(deposito_lookup_retorno, on=["Material"] + colunas_data_mov + colunas_mapa_mov, how="left")
-
+                resumo_retorno = df_mapas_ag.groupby(grupo_mov)["R Vazio"].sum().reset_index().rename(
+                    columns={"R Vazio": "Qtd_Retorno_654"}
+                )
                 if desc_material is not None:
                     resumo_retorno = resumo_retorno.merge(desc_material, on="Material", how="left")
-
                 resumo_retorno["Qtd_Retorno_654"] = resumo_retorno["Qtd_Retorno_654"].round(0).astype(int)
 
                 if "Data" in resumo_retorno.columns:
-                    colunas_historico_ret = ["Material", "Data"] + colunas_mapa_mov + colunas_deposito_mov + colunas_desc_mov
+                    colunas_historico_ret = ["Material", "Data"] + colunas_mapa_mov + (["Descrição"] if desc_material is not None else [])
                     chave_historico_ret = ["Material", "Data"] + colunas_mapa_mov
                     acumular_historico(resumo_retorno[colunas_historico_ret + ["Qtd_Retorno_654"]], "Retorno654", chave_historico_ret)
 
-                st.markdown("**Detalhe por produto — Retorno (654)**")
-                resumo_retorno_exibir = resumo_retorno.copy()
-                if "Depósito" in resumo_retorno_exibir.columns:
-                    resumo_retorno_exibir["Depósito"] = resumo_retorno_exibir["Depósito"].apply(nome_deposito)
-                st.dataframe(resumo_retorno_exibir.sort_values("Qtd_Retorno_654", ascending=False), width='stretch')
+                st.markdown("**Detalhe por produto — Retorno (Realizado)**")
+                st.dataframe(resumo_retorno.sort_values("Qtd_Retorno_654", ascending=False), width='stretch')
+        else:
+            faltando = colunas_necessarias - set(df_mapas_ag.columns)
+            st.error(f"O relatório 03.07.13 carregado não tem as colunas esperadas: {', '.join(sorted(faltando))}.")
+    else:
+        st.info(f"Carregue o relatório {ARQUIVO_MAPAS_AG.name} na barra lateral.")
 
 
 with aba_cheio:
@@ -434,12 +416,10 @@ with aba_vazio:
 with aba_dados:
     if df_de_material is not None:
         st.subheader("De Material (de-para)"); st.dataframe(exibir_seguro(df_de_material), width='stretch')
-    if df_prestacao is not None:
-        st.subheader("Prestação de Contas"); st.dataframe(exibir_seguro(df_prestacao), width='stretch')
+    if df_mapas_ag is not None:
+        st.subheader("Mapas (03.07.13 — Previsto x Realizado)"); st.dataframe(exibir_seguro(df_mapas_ag), width='stretch')
     if df_comodato is not None:
         st.subheader("Estoque / Comodato"); st.dataframe(exibir_seguro(df_comodato), width='stretch')
-    if df_movimentacao is not None:
-        st.subheader("Movimentação"); st.dataframe(exibir_seguro(df_movimentacao), width='stretch')
     if df_estoque_cheio is not None:
         st.subheader("Estoque Cheio"); st.dataframe(exibir_seguro(df_estoque_cheio), width='stretch')
     if df_ret is not None:
@@ -519,7 +499,7 @@ with aba_painel:
         st.warning(f"Não há histórico registrado pra {data_escolhida}.")
 
     familias_exibicao = ["300ml", "600ml", "Verde 600", "1L", "Barril 30L", "Barril 50L"]
-    dict_cheio, dict_venda, dict_vazio = calcular_totais_por_familia(data_escolhida, familias_exibicao)
+    dict_cheio, dict_venda, dict_vazio = calcular_totais_por_familia(data_escolhida, familias_exibicao, lookup_codigo=lookup_ag)
 
     linhas_painel = []
     for fam in familias_exibicao:
@@ -563,7 +543,7 @@ with aba_painel:
 
     linhas_evolucao = []
     for d_loop in datas_disponiveis:
-        c_loop, v_loop, vz_loop = calcular_totais_por_familia(d_loop, familias_exibicao)
+        c_loop, v_loop, vz_loop = calcular_totais_por_familia(d_loop, familias_exibicao, lookup_codigo=lookup_ag)
         for fam in familias_exibicao:
             fator_hl = {"300ml": 0.003, "600ml": 0.006, "Verde 600": 0.006, "1L": 0.01, "Barril 30L": 0.3, "Barril 50L": 0.5}[fam]
             fator_cx = fator_conversao_caixas(fam)
