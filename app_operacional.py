@@ -23,7 +23,7 @@ st.caption("Painel, Venda (554/654), Cheio e Vazio (cada um já com sua própria
 
 # --- CARREGAMENTO DE ARQUIVOS (SIDEBAR) ---
 with st.sidebar:
-    if st.button("🔄 Atualizar dados", use_container_width=True):
+    if st.button("🔄 Atualizar dados", width="stretch"):
         st.cache_data.clear()
         st.rerun()
     st.caption("Os arquivos brutos só são relidos quando você aperta esse botão.")
@@ -264,9 +264,6 @@ with aba_movimentacao:
             if colunas_desc_mov:
                 desc_material = df_movimentacao.rename(columns={"Item": "Material"}).drop_duplicates(subset=["Material"])[["Material"] + colunas_desc_mov]
 
-            # Colunas que identificam uma linha única no histórico — Depósito NÃO entra aqui,
-            # só como informação extra, senão reprocessar um dia antigo duplicaria a quantidade
-            # em vez de atualizar a linha existente.
             grupo_mov = ["Item"] + colunas_data_mov + colunas_mapa_mov
 
             # --- Operação 554 (saída) ---
@@ -486,8 +483,6 @@ with aba_dados:
                 df_mensal = df_arquivo.copy()
                 df_mensal["Mês"] = pd.to_datetime(df_mensal["Data"], dayfirst=True, errors="coerce").dt.strftime("%m/%Y")
                 colunas_numericas = df_mensal.select_dtypes(include="number").columns.tolist()
-                # Mapa e Depósito ficam de fora do agrupamento de propósito — senão o resumo
-                # continua granular quase como o dado bruto, em vez de virar um total do mês.
                 colunas_agrupamento = [c for c in df_mensal.columns if c not in colunas_numericas + ["Data", "Mapa", "Depósito"]]
                 if colunas_numericas and colunas_agrupamento:
                     resumo_mensal = df_mensal.groupby(colunas_agrupamento, dropna=False)[colunas_numericas].sum().reset_index()
@@ -560,7 +555,7 @@ with aba_painel:
     st.dataframe(
         df_painel.style.map(lambda _: "background-color: #D6E4F9; color: #1E4D8C; font-weight: 600", subset=["Total"]).format(
             {c: lambda x: formatar_numero(x, visao) for c in ["Cheio", "Venda", "Vazio", "Total"]}
-        ), use_container_width=True, hide_index=True
+        ), width="stretch", hide_index=True
     )
 
     st.divider()
