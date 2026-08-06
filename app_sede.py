@@ -195,11 +195,25 @@ with aba_conciliacao:
         hist_vazio_pa["Qtd_Retorno_Unidades"] = pd.to_numeric(hist_vazio_pa["Garrafas"], errors='coerce').fillna(0) + \
                                                 pd.to_numeric(hist_vazio_pa["Unidades"], errors='coerce').fillna(0)
 
+        # PA "dono" de cada mapa: mesmo que uma família específica ainda não tenha sido
+        # conferida (e portanto não apareça em vazio_agg pra essa família), o mapa como um
+        # todo já pertence a um PA conhecido (Tianguá/Granja) — usado logo abaixo pra não
+        # deixar a família faltante "sumir" sob um PA genérico.
+        mapa_pa_lookup = hist_vazio_pa.groupby("Mapa")["PA"].first().to_dict()
+
         vazio_agg = hist_vazio_pa.groupby(["Mapa", "PA", "Familia"])["Qtd_Retorno_Unidades"].sum().reset_index()
 
         # 3. CRUZAMENTO (MERGE) E CÁLCULO FÍSICO
         df_concil = pd.merge(venda_agg, vazio_agg, on=["Mapa", "Familia"], how="outer").fillna(0)
-        df_concil["PA"] = df_concil["PA"].replace(0, "Aguardando Retorno")
+
+        # Se uma família saiu na 554 mas o conferente não digitou nenhum retorno pra ela
+        # (situação real de "faltou"), a linha continua no PA correto do mapa (em vez de
+        # cair num rótulo genérico "Aguardando Retorno" que ficava invisível ao filtrar
+        # por um PA específico).
+        df_concil["PA"] = df_concil.apply(
+            lambda r: mapa_pa_lookup.get(r["Mapa"], "Aguardando Retorno") if r["PA"] == 0 else r["PA"],
+            axis=1,
+        )
 
         df_concil["Fator"] = df_concil["Familia"].apply(fator_conversao_caixas)
 
@@ -233,20 +247,19 @@ with aba_conciliacao:
 
         df_concil["Diferença"] = df_concil.apply(lambda r: formata_dif(r["Diferença_Unidades"], r["Familia"]), axis=1)
 
-        # LÓGICA DE STATUS INTELIGENTE (VERIFICA SE HOUVE SAÍDA)
+        # LÓGICA DE STATUS — 3 regras de negócio:
+        # 1) saiu na 554 e o conferente não digitou retorno -> Faltou AG (dif < 0)
+        # 2) não saiu e não foi digitado -> não gera linha nenhuma (sem problema)
+        # 3) não saiu (ou saiu menos) e o conferente digitou algo -> Sobrou AG (dif > 0)
         def status_conciliacao(row):
             dif = row["Diferença_Unidades"]
-            saida = row["Qtd_Saida_Unidades"]
 
             if dif == 0:
                 return "✅ Bateu"
             elif dif < 0:
                 return "❌ Faltou AG"
-            else:  # dif > 0
-                if saida == 0:
-                    return "🔎 Sem Saída (02.05.01)"
-                else:
-                    return "⚠️ Sobrou AG"
+            else:  # dif > 0 — retornou mais do que saiu, incluindo quando não saiu nada
+                return "⚠️ Sobrou AG"
 
         df_concil["Status"] = df_concil.apply(status_conciliacao, axis=1)
 
@@ -255,7 +268,7 @@ with aba_conciliacao:
 
         lista_pas = ["Todos"] + sorted(df_concil["PA"].unique().tolist())
         pa_filter = col_filtro1.selectbox("Filtrar por PA:", lista_pas)
-        status_filter = col_filtro2.selectbox("Filtrar por Status:", ["Todos", "❌ Faltou AG", "⚠️ Sobrou AG", "🔎 Sem Saída (02.05.01)", "✅ Bateu"])
+        status_filter = col_filtro2.selectbox("Filtrar por Status:", ["Todos", "❌ Faltou AG", "⚠️ Sobrou AG", "✅ Bateu"])
         mapa_search = col_filtro3.text_input("🔍 Pesquisar Mapa Específico (opcional):", "")
 
         df_display = df_concil.copy()
@@ -277,8 +290,7 @@ with aba_conciliacao:
             use_container_width=True, hide_index=True
         )
 
-        st.caption("Nota 1: Mapas com status 'Aguardando Retorno' tiveram venda (saída) na 554, mas o conferente ainda não registrou nenhum retorno para ele na aba 'Vazio por PA'.")
-        st.caption("Nota 2: Mapas com status 'Sem Saída' foram conferidos no PA, mas não constam na carga do 02.05.01. A diferença é sempre exibida na menor unidade física (garrafas ou unidades soltas).")
+        st.caption("Nota: a diferença é sempre exibida na menor unidade física (garrafas ou unidades soltas). Faltou AG = saiu e não retornou (ou retornou menos); Sobrou AG = retornou mais do que saiu, incluindo quando não havia saída registrada pra aquela família nesse mapa.")
 
 
 # =========================================================================
