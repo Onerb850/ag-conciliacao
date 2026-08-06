@@ -190,9 +190,16 @@ with aba_conciliacao:
         # 1. VENDA (SAÍDA) — classificada pelo Código do Material via De Material.xlsx,
         # não pela descrição abreviada do relatório (mais confiável).
         hist_venda = hist_venda.copy()
-        hist_venda["Familia"] = hist_venda["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag)[0])
+        familia_tipo_venda = hist_venda["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
+        hist_venda["Familia"] = familia_tipo_venda.apply(lambda ft: ft[0])
+        hist_venda["Tipo"] = familia_tipo_venda.apply(lambda ft: ft[1])
 
-        df_venda_ag = hist_venda[hist_venda["Familia"] != "Outro"].copy()
+        # Só entram na soma por família os itens "soltos" (Garrafa ou Barril) — igual ao
+        # Retorno digitado manualmente, que também só conta Garrafas+Unidades e nunca a
+        # coluna Garrafeiras. Incluir garrafeira aqui infla a Saída e faz o mapa parecer
+        # "faltando" mesmo quando bateu perfeito (garrafeira é conferida à parte, na seção
+        # "Conferência Garrafa × Garrafeira" da Conciliação Mapas Sede).
+        df_venda_ag = hist_venda[(hist_venda["Familia"] != "Outro") & (hist_venda["Tipo"] != "Garrafeira")].copy()
         df_venda_ag["Mapa"] = df_venda_ag["Mapa"].apply(limpa_mapa)
 
         venda_agg = df_venda_ag.groupby(["Mapa", "Familia"])["Qtd. Vendida/Movimentada"].sum().reset_index()
