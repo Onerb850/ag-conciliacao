@@ -17,12 +17,17 @@ from datetime import date
 
 PASTA_PROJETO = Path(__file__).parent
 ARQUIVO_DE_MATERIAL = PASTA_PROJETO / "De Material.xlsx"
-ARQUIVO_PRESTACAO = PASTA_PROJETO / "03.07.13.csv"   # mapas da rota
+ARQUIVO_PRESTACAO = PASTA_PROJETO / "03.07.13.csv"   # relatório de mapas: Previsto (P) x Realizado (R) por item/mapa
+ARQUIVO_MAPAS_AG = ARQUIVO_PRESTACAO  # alias — mesmo arquivo, nome mais claro pra quem lê o código depois de 2026-08
 ARQUIVO_COMODATO = PASTA_PROJETO / "02.02.20.csv"    # comodato (emprestado)
-ARQUIVO_MOVIMENTACAO = PASTA_PROJETO / "02.05.01.csv"  # movimentações 554/654
 ARQUIVO_RET = PASTA_PROJETO / "RET.csv"  # cadastro de produtos retornáveis
 ARQUIVO_HISTORICO_EXCEL = PASTA_PROJETO / "historico_ag.xlsx"  # planilha única, uma aba por origem
 NOME_HISTORICO_EXCEL = "historico_ag.xlsx"
+
+# NOTA (2026-08): o antigo ARQUIVO_MOVIMENTACAO (02.05.01.csv) foi aposentado —
+# o relatório 03.07.13 (ARQUIVO_PRESTACAO/ARQUIVO_MAPAS_AG) já traz Previsto (saída)
+# e Realizado (retorno) lado a lado por Mapa+Material, então não é mais necessário
+# processar o 02.05.01 (mais pesado e com códigos de operação 554/654 pra decifrar).
 
 
 # =========================================================================
@@ -189,9 +194,9 @@ def ler_csv_robusto(caminho: Path) -> pd.DataFrame:
 def carregar(caminho: Path) -> pd.DataFrame | None:
     """Modo LOCAL: lê do disco pelo caminho de sempre.
     Modo DRIVE: ignora o caminho e busca na pasta do Drive um arquivo cujo nome
-    contenha o mesmo prefixo do caminho local (ex. 'De Material', '02.05.01', 'RET')."""
+    contenha o mesmo prefixo do caminho local (ex. 'De Material', '03.07.13', 'RET')."""
     if gdrive_ativo():
-        nome_busca = caminho.stem  # "De Material", "02.05.01", "RET", "02.02.20"
+        nome_busca = caminho.stem  # "De Material", "03.07.13", "RET", "02.02.20"
         dados = _baixar_arquivo_mais_recente_drive(nome_busca)
         if dados is None:
             return None
@@ -307,7 +312,9 @@ def normalizar_codigo(serie: pd.Series) -> pd.Series:
 
 
 def limpa_mapa(m):
-    """Remove zeros à esquerda e espaços para garantir que os mapas casem perfeitamente no cruzamento."""
+    """Remove zeros à esquerda e espaços — usada tanto pra número de mapa quanto pra
+    código de material zero-padded (ex: '027983' -> '27983'), garantindo que tudo
+    casa perfeitamente nos cruzamentos, não importa o relatório de origem."""
     m = str(m).strip()
     try:
         return str(int(m))
@@ -536,8 +543,9 @@ MAPA_APELIDOS = {
     "42069": "PALLET PBR2",
 }
 
-# A descrição da garrafeira não menciona "300"/"600" (ex: "GARRAFEIRA PLAST,24 G"), então
-# padronizar_familia() não consegue classificá-la pela descrição — precisa saber pelo código.
+# A descrição da garrafeira nem sempre menciona "300"/"600" (ex: "LITRINHO" sozinho no
+# De Material), então padronizar_familia() não consegue classificá-la pela descrição —
+# precisa saber pelo código. Também força o Tipo="Garrafeira" em montar_lookup_ag_por_codigo().
 GARRAFEIRA_FAMILIA = {"863059": "300ml", "899599": "600ml", "188005": "1L"}
 
 # Rótulo exibido nos formulários de digitação (Vazio, Vazio por PA) — a família continua
@@ -560,8 +568,39 @@ def familia_normalizada_600(familia: str) -> str:
 
 
 # =========================================================================
-# NOMES DE DEPÓSITO — o 02.05.01.csv só traz o código numérico do depósito,
-# o nome vem de uma tabela fixa do Promax (mesma pra todos os armazéns 1/2/3)
+# CLASSIFICAÇÃO POR CÓDIGO (De Material.xlsx) — 2026-08
+# Em vez de tentar interpretar a descrição abreviada de cada relatório (que muda de
+# formato entre 02.05.01, 03.07.13 etc., e já causou bug de classificação errada),
+# a fonte de verdade agora é sempre a descrição mestre do De Material.xlsx (coluna
+# "Desc 2"), consultada pelo Código do item — muito mais estável.
+# =========================================================================
+
+def montar_lookup_ag_por_codigo(df_de_material: pd.DataFrame) -> dict:
+    """Monta um dicionário Código(Promax) -> (Familia, Tipo), usando a descrição mestre
+    do De Material.xlsx. Códigos de garrafeira cuja descrição mestre não menciona volume
+    (ex: 863059='LITRINHO', sem "300"/"GARRAFEIRA" no texto) usam o override manual
+    GARRAFEIRA_FAMILIA, que também força Tipo='Garrafeira'."""
+    lookup: dict[str, tuple[str, str]] = {}
+    if df_de_material is not None and "Promax" in df_de_material.columns:
+        col_desc = next((c for c in ["Desc 2", "Descricao", "Descrição"] if c in df_de_material.columns), None)
+        if col_desc:
+            for _, linha in df_de_material.iterrows():
+                codigo = limpa_mapa(linha["Promax"])
+                desc = str(linha[col_desc])
+                lookup[codigo] = (padronizar_familia(desc), classificar_tipo_generico(desc))
+    for codigo, familia in GARRAFEIRA_FAMILIA.items():
+        lookup[codigo] = (familia, "Garrafeira")
+    return lookup
+
+
+def familia_tipo_por_codigo(codigo, lookup: dict) -> tuple:
+    """Consulta o lookup Código->(Familia,Tipo) montado por montar_lookup_ag_por_codigo().
+    Cai pra ('Outro','Outro') se o código não estiver cadastrado em nenhum dos dois."""
+    return lookup.get(limpa_mapa(codigo), ("Outro", "Outro"))
+
+
+# =========================================================================
+# NOMES DE DEPÓSITO — tabela fixa do Promax (mesma pra todos os armazéns 1/2/3)
 # =========================================================================
 DEPOSITO_NOMES = {
     "1": "Central",
@@ -613,7 +652,10 @@ def coletar_datas_disponiveis(*nomes_abas: str) -> list[str]:
         return sorted(datas, reverse=True)
 
 
-def calcular_totais_por_familia(data_str: str, familias_exibicao: list[str]) -> tuple[dict, dict, dict]:
+def calcular_totais_por_familia(data_str: str, familias_exibicao: list[str], lookup_codigo: dict | None = None) -> tuple[dict, dict, dict]:
+    """lookup_codigo (opcional): dict Código->(Familia,Tipo) de montar_lookup_ag_por_codigo().
+    Quando fornecido, a Venda é classificada pelo Código do Material (mais confiável);
+    sem ele, cai pro método antigo de interpretar o texto da Descrição."""
     dict_cheio = {f: 0 for f in familias_exibicao}
     dict_venda = {f: 0 for f in familias_exibicao}
     dict_vazio = {f: 0 for f in familias_exibicao}
@@ -634,8 +676,11 @@ def calcular_totais_por_familia(data_str: str, familias_exibicao: list[str]) -> 
         hist_venda = hist_venda[hist_venda["Data"].astype(str) == data_str]
         col_desc = next((c for c in ["Descrição", "Descricao"] if c in hist_venda.columns), None)
         for _, row in hist_venda.iterrows():
-            desc = str(row.get(col_desc, "")) if col_desc else ""
-            fam = padronizar_familia(desc)
+            if lookup_codigo is not None and "Material" in hist_venda.columns:
+                fam = familia_tipo_por_codigo(row.get("Material", ""), lookup_codigo)[0]
+            else:
+                desc = str(row.get(col_desc, "")) if col_desc else ""
+                fam = padronizar_familia(desc)
             if fam in dict_venda:
                 dict_venda[fam] += row.get("Qtd. Vendida/Movimentada", 0)
 
