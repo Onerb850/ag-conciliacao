@@ -307,10 +307,11 @@ def normalizar_codigo(serie: pd.Series) -> pd.Series:
 
 
 def limpa_mapa(m):
-    """Remove zeros à esquerda e espaços para garantir que os mapas casem perfeitamente no cruzamento."""
+    """Remove zeros à esquerda, pontos decimais/milhares e espaços para garantir que os mapas casem perfeitamente."""
     m = str(m).strip()
+    m = m.replace(".", "")
     try:
-        return str(int(m))
+        return str(int(float(m)))
     except Exception:
         return m
 
@@ -344,7 +345,8 @@ def padronizar_familia(desc: str) -> str:
     if "300C23" in d or "300C24" in d or "GFVD300" in d or "LITRINHO" in d or "300ML" in d or "330ML" in d:
         return "300ml"
 
-    marcas_verde = ["SPTN", "SPATEN", "STELLA", "S ARTOIS", "STARTPG", "BECKS", "HEINEKEN"]
+    # ADICIONADO "VERDE" à lista de verificação
+    marcas_verde = ["SPTN", "SPATEN", "STELLA", "S ARTOIS", "STARTPG", "BECKS", "HEINEKEN", "VERDE"]
     if ("600" in d or "635" in d) and any(m in d for m in marcas_verde):
         return "Verde 600"
 
@@ -516,13 +518,27 @@ def formata_qtd_fisica(qtd, tipo: str, familia: str) -> str:
 
 
 def formata_diferenca_fisica(dif, tipo: str, familia: str) -> str:
-    """Diferença sempre na menor unidade física: 'gf' pra garrafa, 'un' pra tudo mais — com sinal."""
+    """Exibe a diferença formatada em caixas e garrafas para facilitar a leitura visual."""
     dif = int(dif)
     if dif == 0:
         return "0"
+        
     sinal = "+" if dif > 0 else "-"
-    unidade = "gf" if (tipo == "Garrafa" and familia != "Outro") else "un"
-    return f"{sinal}{abs(dif)} {unidade}"
+    dif_abs = abs(dif)
+    
+    if tipo == "Garrafa" and familia != "Outro":
+        fator = int(fator_conversao_caixas(familia))
+        cx = dif_abs // fator
+        gf = dif_abs % fator
+        
+        partes = []
+        if cx > 0: partes.append(f"{cx} cx")
+        if gf > 0: partes.append(f"{gf} gf")
+        
+        texto_dif = " + ".join(partes)
+        return f"{sinal}{texto_dif}"
+    
+    return f"{sinal}{dif_abs} un"
 
 
 # =========================================================================
