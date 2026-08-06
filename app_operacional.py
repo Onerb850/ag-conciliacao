@@ -478,7 +478,25 @@ with aba_dados:
             st.info("Nada arquivado ainda pra essa aba.")
         else:
             st.caption(f"{len(df_arquivo)} linha(s) arquivada(s).")
-            st.dataframe(exibir_seguro(df_arquivo), width='stretch')
+            ver_mensal = st.checkbox(
+                "📅 Ver resumo mensal (agrupado por item), em vez de linha por linha",
+                value=True, key="ver_mensal_arquivo",
+            )
+            if ver_mensal and "Data" in df_arquivo.columns:
+                df_mensal = df_arquivo.copy()
+                df_mensal["Mês"] = pd.to_datetime(df_mensal["Data"], dayfirst=True, errors="coerce").dt.strftime("%m/%Y")
+                colunas_numericas = df_mensal.select_dtypes(include="number").columns.tolist()
+                # Mapa e Depósito ficam de fora do agrupamento de propósito — senão o resumo
+                # continua granular quase como o dado bruto, em vez de virar um total do mês.
+                colunas_agrupamento = [c for c in df_mensal.columns if c not in colunas_numericas + ["Data", "Mapa", "Depósito"]]
+                if colunas_numericas and colunas_agrupamento:
+                    resumo_mensal = df_mensal.groupby(colunas_agrupamento, dropna=False)[colunas_numericas].sum().reset_index()
+                    resumo_mensal = resumo_mensal.sort_values("Mês", ascending=False)
+                    st.dataframe(exibir_seguro(resumo_mensal), width='stretch')
+                else:
+                    st.dataframe(exibir_seguro(df_arquivo), width='stretch')
+            else:
+                st.dataframe(exibir_seguro(df_arquivo), width='stretch')
 
 
 # =========================================================================
