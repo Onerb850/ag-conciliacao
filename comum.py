@@ -344,7 +344,7 @@ def padronizar_familia(desc: str) -> str:
     if "300C23" in d or "300C24" in d or "GFVD300" in d or "LITRINHO" in d or "300ML" in d or "330ML" in d:
         return "300ml"
 
-    marcas_verde = ["SPTN", "SPATEN", "STELLA", "S ARTOIS", "STARTPG", "BECKS", "HEINEKEN"]
+    marcas_verde = ["SPTN", "SPATEN", "STELLA", "S ARTOIS", "STARTPG", "BECKS", "HEINEKEN", "VERDE"]
     if ("600" in d or "635" in d) and any(m in d for m in marcas_verde):
         return "Verde 600"
 
