@@ -1,500 +1,653 @@
+"""
+Funções e constantes compartilhadas entre os apps de AG:
+- app_operacional.py  (Painel, Venda, Cheio, Vazio, Vazio por PA, Variação, Dados)
+- app_conciliacao.py  (Conciliação Mapas PA, Conciliação Mapas Sede)
+
+Modo de armazenamento: LOCAL (arquivos na mesma pasta do projeto) ou GOOGLE DRIVE
+(pra deploy na nuvem, onde não existe uma pasta local persistente). Controlado
+pelo secrets.toml — ver instruções no final deste arquivo.
+"""
+
+import io
 import streamlit as st
 import pandas as pd
+import re
+from pathlib import Path
 from datetime import date
 
-from comum import (
-    ler_aba_historico,
-    salvar_aba_historico,
-    acumular_historico,
-    limpa_mapa,
-    padronizar_familia,
-    fator_conversao_caixas,
-    cor_linha_status,
-    classificar_tipo_generico,
-    formata_qtd_fisica,
-    formata_diferenca_fisica,
-    com_apelido,
-    GARRAFEIRA_FAMILIA,
-    familia_normalizada_600,
-    nome_deposito,
-)
+PASTA_PROJETO = Path(__file__).parent
+ARQUIVO_DE_MATERIAL = PASTA_PROJETO / "De Material.xlsx"
+ARQUIVO_PRESTACAO = PASTA_PROJETO / "03.07.13.csv"   # mapas da rota
+ARQUIVO_COMODATO = PASTA_PROJETO / "02.02.20.csv"    # comodato (emprestado)
+ARQUIVO_MOVIMENTACAO = PASTA_PROJETO / "02.05.01.csv"  # movimentações 554/654
+ARQUIVO_RET = PASTA_PROJETO / "RET.csv"  # cadastro de produtos retornáveis
+ARQUIVO_HISTORICO_EXCEL = PASTA_PROJETO / "historico_ag.xlsx"  # planilha única, uma aba por origem
+NOME_HISTORICO_EXCEL = "historico_ag.xlsx"
 
-st.set_page_config(page_title="Conciliação de Mapas (AG)", layout="wide")
-st.title("⚖️ Conciliação de Mapas (AG)")
-st.caption(
-    "Este app só lê o histórico já salvo (historico_ag.xlsx) — não processa CSVs brutos, por isso é bem mais leve. "
-    "Pra alimentar Venda (554/654), use o app 'Operacional'."
-)
 
-REGRAS_VAZIO = {
-    "300ml": {"garrafas_por_cx": 23, "garrafeiras_por_cx": 1},
-    "600ml": {"garrafas_por_cx": 24, "garrafeiras_por_cx": 1},
-    "Verde 600": {"garrafas_por_cx": 24, "garrafeiras_por_cx": 1},
-    "1L": {"garrafas_por_cx": 12, "garrafeiras_por_cx": 1},
+# =========================================================================
+# GOOGLE DRIVE — ativado via secrets.toml (ver instruções no final do arquivo)
+# =========================================================================
+
+def gdrive_ativo() -> bool:
+    """True se o secrets.toml tiver [gdrive] configurado com ativo=true."""
+    try:
+        return bool(st.secrets.get("gdrive", {}).get("ativo", False))
+    except Exception:
+        return False
+
+
+@st.cache_resource(show_spinner=False)
+def _servico_drive():
+    from googleapiclient.discovery import build
+
+    if "gdrive_oauth" in st.secrets:
+        # Autentica como a própria conta Google do usuário (tem cota de armazenamento normal).
+        # Necessário pra ESCREVER — contas de serviço não têm cota própria em Drive pessoal.
+        from google.oauth2.credentials import Credentials
+        info = st.secrets["gdrive_oauth"]
+        credenciais = Credentials(
+            token=None,
+            refresh_token=info["refresh_token"],
+            client_id=info["client_id"],
+            client_secret=info["client_secret"],
+            token_uri="https://oauth2.googleapis.com/token",
+            scopes=["https://www.googleapis.com/auth/drive"],
+        )
+    else:
+        # Conta de serviço: funciona só para LEITURA em Drive pessoal (não tem cota pra escrever).
+        from google.oauth2 import service_account
+        info = dict(st.secrets["gdrive_service_account"])
+        credenciais = service_account.Credentials.from_service_account_info(
+            info, scopes=["https://www.googleapis.com/auth/drive"]
+        )
+    return build("drive", "v3", credentials=credenciais)
+
+
+def _pasta_id() -> str:
+    return st.secrets["gdrive"]["pasta_id"]
+
+
+def _com_retry(func, tentativas: int = 3, espera_inicial: float = 1.0):
+    """Executa func() com novas tentativas em caso de falha de rede transitória
+    (SSL, timeout, conexão), com espera crescente entre elas. Erros de permissão/
+    autenticação não são deste tipo e propagam na primeira tentativa mesmo assim
+    (não adianta tentar de novo)."""
+    import ssl
+    import socket
+    import time
+    erros_transitorios = (ssl.SSLError, socket.timeout, socket.error, ConnectionError, TimeoutError, OSError)
+    ultimo_erro = None
+    espera = espera_inicial
+    for tentativa in range(tentativas):
+        try:
+            return func()
+        except erros_transitorios as e:
+            ultimo_erro = e
+            if tentativa < tentativas - 1:
+                time.sleep(espera)
+                espera *= 2
+    raise ultimo_erro
+
+
+def listar_arquivos_pasta(nome_contem: str | None = None) -> list[dict]:
+    """Lista arquivos da pasta configurada, mais recentes primeiro. nome_contem filtra por substring do nome."""
+    def _fazer():
+        servico = _servico_drive()
+        query = f"'{_pasta_id()}' in parents and trashed = false"
+        if nome_contem:
+            query += f" and name contains '{nome_contem}'"
+        resultado = servico.files().list(
+            q=query, fields="files(id, name, modifiedTime)", orderBy="modifiedTime desc"
+        ).execute()
+        return resultado.get("files", [])
+    return _com_retry(_fazer)
+
+
+def _baixar_bytes_drive(file_id: str) -> bytes:
+    def _fazer():
+        from googleapiclient.http import MediaIoBaseDownload
+        servico = _servico_drive()
+        buffer = io.BytesIO()
+        request = servico.files().get_media(fileId=file_id)
+        downloader = MediaIoBaseDownload(buffer, request)
+        concluido = False
+        while not concluido:
+            _, concluido = downloader.next_chunk()
+        buffer.seek(0)
+        return buffer.read()
+    return _com_retry(_fazer)
+
+
+def _subir_bytes_drive(nome_arquivo: str, conteudo: bytes, mimetype: str) -> None:
+    """Sobe uma nova versão do arquivo (atualiza se já existir com esse nome na pasta, senão cria)."""
+    from googleapiclient.http import MediaIoBaseUpload
+    servico = _servico_drive()
+    existentes = listar_arquivos_pasta(nome_contem=nome_arquivo)
+    existentes = [a for a in existentes if a["name"] == nome_arquivo]
+    media = MediaIoBaseUpload(io.BytesIO(conteudo), mimetype=mimetype, resumable=False)
+    if existentes:
+        servico.files().update(fileId=existentes[0]["id"], media_body=media).execute()
+    else:
+        metadata = {"name": nome_arquivo, "parents": [_pasta_id()]}
+        servico.files().create(body=metadata, media_body=media).execute()
+
+
+@st.cache_data(show_spinner=False, ttl=60)
+def _baixar_arquivo_mais_recente_drive(nome_contem: str) -> bytes | None:
+    """Busca o arquivo mais recente cujo nome contenha nome_contem e baixa seu conteúdo.
+    Cache de 60s: várias interações seguidas na mesma sessão não batem na API repetidamente,
+    mas uma troca de versão no Drive é detectada em até 1 minuto."""
+    arquivos = listar_arquivos_pasta(nome_contem)
+    if not arquivos:
+        return None
+    return _baixar_bytes_drive(arquivos[0]["id"])
+
+
+# =========================================================================
+# LEITURA/ESCRITA DE ARQUIVOS
+# =========================================================================
+
+def deduplicar_nomes_coluna(nomes: list[str]) -> list[str]:
+    vistos: dict[str, int] = {}
+    resultado = []
+    for i, nome in enumerate(nomes):
+        base = nome.strip() if nome.strip() else f"col_sem_nome_{i}"
+        if base in vistos:
+            vistos[base] += 1
+            resultado.append(f"{base}____{vistos[base]}")
+        else:
+            vistos[base] = 0
+            resultado.append(base)
+    return resultado
+
+
+def _ler_csv_bytes(dados: bytes) -> pd.DataFrame:
+    encodings = ["utf-8-sig", "latin1", "cp1252"]
+    separadores = [";", ",", "\t"]
+    ultimo_erro = None
+    for enc in encodings:
+        for sep in separadores:
+            try:
+                primeira_linha = dados.decode(enc).split("\n", 1)[0].rstrip("\r")
+                colunas = deduplicar_nomes_coluna(primeira_linha.split(sep))
+                return pd.read_csv(
+                    io.BytesIO(dados), sep=sep, encoding=enc, thousands=".", decimal=",",
+                    header=0, names=colunas,
+                )
+            except Exception as e:
+                ultimo_erro = e
+    raise ultimo_erro
+
+
+def ler_csv_robusto(caminho: Path) -> pd.DataFrame:
+    with open(caminho, "rb") as f:
+        return _ler_csv_bytes(f.read())
+
+
+@st.cache_data(show_spinner=False)
+def carregar(caminho: Path) -> pd.DataFrame | None:
+    """Modo LOCAL: lê do disco pelo caminho de sempre.
+    Modo DRIVE: ignora o caminho e busca na pasta do Drive um arquivo cujo nome
+    contenha o mesmo prefixo do caminho local (ex. 'De Material', '02.05.01', 'RET')."""
+    if gdrive_ativo():
+        nome_busca = caminho.stem  # "De Material", "02.05.01", "RET", "02.02.20"
+        dados = _baixar_arquivo_mais_recente_drive(nome_busca)
+        if dados is None:
+            return None
+        if caminho.suffix.lower() == ".csv":
+            return _ler_csv_bytes(dados)
+        return pd.read_excel(io.BytesIO(dados))
+
+    if not caminho.exists():
+        return None
+    if caminho.suffix.lower() == ".csv":
+        return ler_csv_robusto(caminho)
+    return pd.read_excel(caminho)
+
+
+def salvar_aba_historico(nome_aba: str, df: pd.DataFrame, nome_arquivo: str = None) -> None:
+    nome_arquivo = nome_arquivo or NOME_HISTORICO_EXCEL
+    caminho_local = PASTA_PROJETO / nome_arquivo
+
+    if gdrive_ativo():
+        historico_atual = _baixar_arquivo_mais_recente_drive(nome_arquivo)
+        buffer_saida = io.BytesIO()
+        if historico_atual:
+            # reabre todas as abas existentes e substitui/adiciona a que mudou
+            abas_existentes = pd.read_excel(io.BytesIO(historico_atual), sheet_name=None)
+            abas_existentes[nome_aba] = df
+            with pd.ExcelWriter(buffer_saida, engine="openpyxl") as writer:
+                for aba, conteudo in abas_existentes.items():
+                    conteudo.to_excel(writer, sheet_name=aba, index=False)
+        else:
+            with pd.ExcelWriter(buffer_saida, engine="openpyxl") as writer:
+                df.to_excel(writer, sheet_name=nome_aba, index=False)
+        _subir_bytes_drive(
+            nome_arquivo, buffer_saida.getvalue(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        _baixar_arquivo_mais_recente_drive.clear()
+        return
+
+    if caminho_local.exists():
+        with pd.ExcelWriter(caminho_local, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+            df.to_excel(writer, sheet_name=nome_aba, index=False)
+    else:
+        with pd.ExcelWriter(caminho_local, engine="openpyxl", mode="w") as writer:
+            df.to_excel(writer, sheet_name=nome_aba, index=False)
+
+
+def ler_aba_historico(nome_aba: str, nome_arquivo: str = None) -> pd.DataFrame:
+    nome_arquivo = nome_arquivo or NOME_HISTORICO_EXCEL
+    caminho_local = PASTA_PROJETO / nome_arquivo
+
+    if gdrive_ativo():
+        dados = _baixar_arquivo_mais_recente_drive(nome_arquivo)
+        if dados is None:
+            return pd.DataFrame()
+        try:
+            return pd.read_excel(io.BytesIO(dados), sheet_name=nome_aba)
+        except ValueError:
+            return pd.DataFrame()
+
+    if not caminho_local.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_excel(caminho_local, sheet_name=nome_aba)
+    except ValueError:
+        return pd.DataFrame()
+
+
+# =========================================================================
+# ARQUIVAMENTO — mantém historico_ag.xlsx enxuto movendo dados antigos pra
+# um segundo arquivo (historico_ag_arquivo.xlsx), consultável sob demanda
+# =========================================================================
+
+NOME_HISTORICO_ARQUIVO = "historico_ag_arquivo.xlsx"
+
+ABAS_ARQUIVAVEIS = ["Venda", "Retorno654", "Cheio", "Vazio", "VazioPA"]
+
+
+def arquivar_dados_antigos(nome_aba: str, meses_manter: int = 6) -> tuple[int, int]:
+    """Move linhas com Data mais antiga que `meses_manter` meses do historico_ag.xlsx
+    pro historico_ag_arquivo.xlsx, mantendo o arquivo ativo enxuto e rápido.
+    Retorna (linhas que ficaram ativas, linhas movidas pro arquivo)."""
+    historico = ler_aba_historico(nome_aba)
+    if historico.empty or "Data" not in historico.columns:
+        return (len(historico), 0)
+
+    historico = historico.copy()
+    historico["_dt"] = pd.to_datetime(historico["Data"], dayfirst=True, errors="coerce")
+    limite = pd.Timestamp.today() - pd.DateOffset(months=meses_manter)
+
+    recentes = historico[historico["_dt"] >= limite].drop(columns=["_dt"])
+    antigos = historico[historico["_dt"] < limite].drop(columns=["_dt"])
+
+    if antigos.empty:
+        return (len(recentes), 0)
+
+    arquivo_existente = ler_aba_historico(nome_aba, nome_arquivo=NOME_HISTORICO_ARQUIVO)
+    if not arquivo_existente.empty:
+        combinado_arquivo = pd.concat([arquivo_existente, antigos], ignore_index=True).drop_duplicates()
+    else:
+        combinado_arquivo = antigos
+
+    salvar_aba_historico(nome_aba, combinado_arquivo, nome_arquivo=NOME_HISTORICO_ARQUIVO)
+    salvar_aba_historico(nome_aba, recentes)
+    return (len(recentes), len(antigos))
+
+
+def normalizar_codigo(serie: pd.Series) -> pd.Series:
+    def conv(v):
+        if pd.isna(v): return None
+        if isinstance(v, float) and v.is_integer(): return str(int(v))
+        return str(v).strip()
+    return serie.apply(conv)
+
+
+def limpa_mapa(m):
+    """Remove zeros à esquerda e espaços para garantir que os mapas casem perfeitamente no cruzamento."""
+    m = str(m).strip()
+    try:
+        return str(int(m))
+    except Exception:
+        return m
+
+
+def numerizar(serie: pd.Series) -> pd.Series:
+    return pd.to_numeric(serie, errors="coerce").fillna(0)
+
+
+def parse_qtde_entrada(serie: pd.Series) -> pd.Series:
+    s = serie.astype(str).str.strip()
+    s = s.str.replace(".", "", regex=False)
+    s = s.str.replace("/", ".", regex=False)
+    return pd.to_numeric(s, errors="coerce").fillna(0)
+
+
+def exibir_seguro(df: pd.DataFrame) -> pd.DataFrame:
+    df_seguro = df.copy()
+    for col in df_seguro.select_dtypes(include=["object"]).columns:
+        df_seguro[col] = df_seguro[col].astype(str)
+    return df_seguro
+
+
+# =========================================================================
+# MOTOR CENTRAL DE CLASSIFICAÇÃO E CONVERSÃO
+# =========================================================================
+
+def padronizar_familia(desc: str) -> str:
+    """Classifica os itens já filtrados na base mestre em suas respectivas famílias de volume."""
+    d = str(desc).upper()
+
+    if "300C23" in d or "300C24" in d or "GFVD300" in d or "LITRINHO" in d or "300ML" in d or "330ML" in d:
+        return "300ml"
+
+    marcas_verde = ["SPTN", "SPATEN", "STELLA", "S ARTOIS", "STARTPG", "BECKS", "HEINEKEN"]
+    if ("600" in d or "635" in d) and any(m in d for m in marcas_verde):
+        return "Verde 600"
+
+    if "600" in d or "635" in d:
+        return "600ml"
+
+    if "1000" in d or "1L" in d or "1 L" in d or "LITRAO" in d or "LITRÃO" in d or "GFVD1000" in d:
+        return "1L"
+
+    if "BARRIL" in d or "KEG" in d or "CHOPP" in d or "CHP" in d:
+        if "30" in d: return "Barril 30L"
+        if "50" in d: return "Barril 50L"
+        return "Barril"
+
+    return "Outro"
+
+
+def fator_conversao_caixas(fam: str) -> float:
+    """Fator universal para converter garrafas soltas vendidas em caixas físicas."""
+    if fam == "300ml": return 23.0
+    if fam in ["600ml", "Verde 600"]: return 24.0
+    if fam == "1L": return 12.0
+    if "Barril" in fam: return 1.0
+    return 1.0
+
+
+def converter_cheio_em_ag(row: pd.Series) -> pd.Series:
+    familia = row["Familia"]
+    disp = float(row.get("Qtd_Cheio", 0))
+    un = str(row.get("UN", "")).strip().upper()
+    qtd_sku = float(row.get("QTD_SKU", 0))
+
+    garrafas = garrafeiras = barris = 0.0
+
+    if familia == "300ml":
+        if qtd_sku <= 0: qtd_sku = 23
+        if un == "CX":
+            garrafas = disp * qtd_sku
+            garrafeiras = disp
+        else:
+            garrafas = disp
+            garrafeiras = disp / qtd_sku
+
+    elif familia in ("600ml", "Verde 600"):
+        if un == "DZ":
+            garrafas = disp * 12
+            garrafeiras = disp / 2
+        elif un == "CX":
+            if qtd_sku <= 0: qtd_sku = 24
+            garrafas = disp * qtd_sku
+            garrafeiras = disp
+        else:
+            garrafas = disp
+            garrafeiras = disp / 24
+
+    elif familia == "1L":
+        if un == "DZ":
+            garrafas = disp * 12
+            garrafeiras = disp
+        elif un == "CX":
+            if qtd_sku <= 0: qtd_sku = 12
+            garrafas = disp * qtd_sku
+            garrafeiras = disp
+        else:
+            garrafas = disp
+            garrafeiras = disp / 12
+
+    elif familia.startswith("Barril"):
+        if un == "L":
+            if "50" in familia:
+                barris = disp / 50
+            elif "30" in familia:
+                barris = disp / 30
+            else:
+                barris = disp
+        else:
+            barris = disp
+
+    return pd.Series({"Garrafas": garrafas, "Garrafeiras": garrafeiras, "Barris": barris})
+
+
+def encontrar_arquivo_por_prefixo(pasta: Path, prefixo: str) -> Path | None:
+    candidatos = sorted(pasta.glob(f"{prefixo}*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidatos[0] if candidatos else None
+
+
+def localizar_grade_mais_recente(prefixo: str = "02.03.04") -> Path | None:
+    """Acha a grade de estoque cheio mais recente (nome com data grudada, ex. 02.03.04.30_07_26.csv).
+    Modo LOCAL: procura na pasta do projeto. Modo DRIVE: procura na pasta configurada do Drive.
+    Retorna um Path (real ou só com o nome, usado depois só pra extrair stem/suffix e chamar carregar())."""
+    if gdrive_ativo():
+        arquivos = listar_arquivos_pasta(nome_contem=prefixo)
+        return Path(arquivos[0]["name"]) if arquivos else None
+    return encontrar_arquivo_por_prefixo(PASTA_PROJETO, prefixo)
+
+
+def extrair_data_do_nome_arquivo(caminho: Path, prefixo: str) -> str | None:
+    resto = caminho.stem[len(prefixo):].strip("._ ")
+    m = re.search(r"(\d{2})[_.\-](\d{2})[_.\-](\d{2,4})", resto)
+    if not m:
+        return None
+    dia, mes, ano = m.groups()
+    if len(ano) == 2:
+        ano = "20" + ano
+    return f"{dia}/{mes}/{ano}"
+
+
+def acumular_historico(df_dia: pd.DataFrame, nome_aba: str, colunas_chave: list[str]) -> pd.DataFrame:
+    historico = ler_aba_historico(nome_aba)
+    if not historico.empty:
+        for c in colunas_chave:
+            if c in historico.columns:
+                historico[c] = historico[c].astype(str)
+        combinado = pd.concat([historico, df_dia], ignore_index=True)
+    else:
+        combinado = df_dia.copy()
+    combinado = combinado.drop_duplicates(subset=colunas_chave, keep="last")
+    salvar_aba_historico(nome_aba, combinado)
+    return combinado
+
+
+def codigos_fora_do_depara(df: pd.DataFrame, coluna_codigo: str, df_de_material: pd.DataFrame, nome_base: str) -> pd.DataFrame | None:
+    if df is None or df_de_material is None or coluna_codigo not in df.columns: return None
+    codigos_validos = set(df_de_material["Promax"].unique())
+    faltantes = df[~df[coluna_codigo].isin(codigos_validos)]
+    if faltantes.empty: return None
+    colunas_desc = [c for c in ["Descricao", "Desc 2", "Desc"] if c in df.columns]
+    resumo = faltantes.groupby([coluna_codigo] + colunas_desc, dropna=False).size().reset_index(name="Linhas afetadas")
+    resumo.insert(0, "Base", nome_base)
+    return resumo
+
+
+def cor_linha_status(val):
+    """Colore a coluna Status nas abas de conciliação (PA e Sede) — mesma paleta pras duas."""
+    if "✅" in str(val): return "color: #173404; font-weight: bold; background-color: #EAF3DE"
+    if "❌" in str(val): return "color: #501313; font-weight: bold; background-color: #FCEBEB"
+    if "⚠️" in str(val): return "color: #5A4000; font-weight: bold; background-color: #FFF4D4"
+    if "🔎" in str(val): return "color: #004085; font-weight: bold; background-color: #CCE5FF"
+    if "⏳" in str(val): return "color: #495057; font-weight: bold; background-color: #E9ECEF"
+    return ""
+
+
+def classificar_tipo_generico(desc: str) -> str:
+    """Classifica o item em Garrafa / Garrafeira / Barril / Outro, pra decidir como exibir a quantidade física."""
+    d = str(desc).upper()
+    if "GARRAFEIRA" in d: return "Garrafeira"
+    if "BARRIL" in d or "KEG" in d: return "Barril"
+    if "GFA" in d or "GARRAFA" in d or "VIDRO" in d: return "Garrafa"
+    return "Outro"
+
+
+def formata_qtd_fisica(qtd, tipo: str, familia: str) -> str:
+    """Garrafa (300ml/600ml/Verde 600/1L) vira 'X un (Y cx + Z gf)' — mostra a quantidade bruta E a
+    conversão em caixa lado a lado, já que são duas leituras diferentes da mesma coisa.
+    Qualquer outro tipo (Garrafeira, Barril, Palete, etc.) vira só 'X un', pois cada unidade ali já
+    corresponde fisicamente a uma caixa/unidade só, sem conversão a fazer."""
+    qtd = int(qtd)
+    if qtd == 0:
+        return "0"
+    if tipo == "Garrafa" and familia != "Outro":
+        fator = int(fator_conversao_caixas(familia))
+        cx, gf = qtd // fator, qtd % fator
+        partes = []
+        if cx > 0: partes.append(f"{cx} cx")
+        if gf > 0: partes.append(f"{gf} gf")
+        texto_cx = " + ".join(partes) if partes else "0 cx"
+        return f"{qtd} un ({texto_cx})"
+    return f"{qtd} un"
+
+
+def formata_diferenca_fisica(dif, tipo: str, familia: str) -> str:
+    """Diferença sempre na menor unidade física: 'gf' pra garrafa, 'un' pra tudo mais — com sinal."""
+    dif = int(dif)
+    if dif == 0:
+        return "0"
+    sinal = "+" if dif > 0 else "-"
+    unidade = "gf" if (tipo == "Garrafa" and familia != "Outro") else "un"
+    return f"{sinal}{abs(dif)} {unidade}"
+
+
+# =========================================================================
+# APELIDOS (nomenclatura própria do usuário, exibida ao lado da descrição de origem)
+# =========================================================================
+
+MAPA_APELIDOS = {
+    "198214": "GARRAFA LITRINHO", "786238": "GARRAFA 600 VERDE", "27983": "GARRAFA 600 AMBAR",
+    "188006": "GARRAFA 1L", "101490": "BARRIL 50L", "188005": "GARRAFEIRA 1L",
+    "863059": "GARRAFEIRA LITRINHO", "899599": "GARRAFEIRA 600", "104195": "PALLET PBR1",
+    "42069": "PALLET PBR2",
 }
 
-aba_vazio_pa, aba_conciliacao, aba_conciliacao_sede = st.tabs(
-    ["Vazio por PA", "Conciliação Mapas PA", "Conciliação Mapas Sede"]
-)
+# A descrição da garrafeira não menciona "300"/"600" (ex: "GARRAFEIRA PLAST,24 G"), então
+# padronizar_familia() não consegue classificá-la pela descrição — precisa saber pelo código.
+GARRAFEIRA_FAMILIA = {"863059": "300ml", "899599": "600ml", "188005": "1L"}
 
-# Roteamento entre as duas conciliações: um mapa só entra na Conciliação Mapas PA se
-# ele foi digitado ali pelo conferente (aba Vazio por PA); todo o resto (mapas que nunca
-# tiveram digitação de PA) cai automaticamente na Conciliação Mapas Sede (554 vs. 654).
-_hist_vazio_pa_bruto = ler_aba_historico("VazioPA")
-if not _hist_vazio_pa_bruto.empty and "Mapa" in _hist_vazio_pa_bruto.columns:
-    MAPAS_COM_CONFERENCIA_PA = set(_hist_vazio_pa_bruto["Mapa"].apply(limpa_mapa).unique())
-else:
-    MAPAS_COM_CONFERENCIA_PA = set()
+# Rótulo exibido nos formulários de digitação (Vazio, Vazio por PA) — a família continua
+# sendo "300ml"/"600ml"/"Verde 600"/"1L" por trás, isso é só o texto que aparece na tela.
+RUTULO_FAMILIA_VAZIO = {
+    "300ml": "LITRINHO",
+    "600ml": "600 AMBAR",
+    "Verde 600": "600 VERDE",
+    "1L": "LITRÃO",
+}
+
+
+def rotulo_familia_vazio(familia: str) -> str:
+    return RUTULO_FAMILIA_VAZIO.get(familia, familia)
+
+
+def familia_normalizada_600(familia: str) -> str:
+    """Agrupa 600ml e Verde 600 numa família só — a mesma garrafeira física (899599) serve às duas cores."""
+    return "600ml" if familia in ("600ml", "Verde 600") else familia
 
 
 # =========================================================================
-# ABA VAZIO POR PA (conferência física digitada pelo conferente)
+# NOMES DE DEPÓSITO — o 02.05.01.csv só traz o código numérico do depósito,
+# o nome vem de uma tabela fixa do Promax (mesma pra todos os armazéns 1/2/3)
 # =========================================================================
-with aba_vazio_pa:
-    st.caption("Conferência do vazio por PA e mapa. Alimenta a Conciliação Mapas PA, ao lado.")
+DEPOSITO_NOMES = {
+    "1": "Central",
+    "2": "Varejo",
+    "3": "Analise",
+    "4": "Terceiros",
+    "5": "Faltas",
+    "6": "Devolucao",
+    "8": "Vazio",
+    "20": "PECAS E MATERIAIS FROTA E LOG",
+    "21": "PECAS/MATERIAIS ADM/VENDA/SEG.",
+    "22": "Deposito PNC",
+    "23": "Equipamentos SOPIV",
+    "24": "Vazio",
+}
 
-    with st.form("form_vazio_pa", clear_on_submit=True):
-        col_data, col_pa, col_mapa = st.columns(3)
-        data_pa = col_data.date_input("Data da Descarga", value=date.today(), key="data_vazio_pa")
-        pa_escolhido = col_pa.selectbox("PA", ["Tianguá", "Granja"], key="pa_vazio_pa")
-        mapa_texto = col_mapa.text_input("Número do Mapa (um por vez)")
 
-        st.markdown("**Caixas Físicas que Retornaram**")
-        valores_familia_pa = {fam: st.number_input(fam, min_value=0, step=1, key=f"cx_pa_{fam}") for fam in REGRAS_VAZIO}
+def nome_deposito(codigo) -> str:
+    """Formata o código do depósito com o nome, ex: '1 - Central'. Mantém o código
+    visível mesmo com o nome, e cai pro código sozinho se não reconhecer (ou for vazio/'-')."""
+    if codigo is None or str(codigo).strip() in ("", "-", "nan", "0"):
+        return "-"
+    codigo_str = str(codigo).strip()
+    if codigo_str.endswith(".0"):
+        codigo_str = codigo_str[:-2]
+    nome = DEPOSITO_NOMES.get(codigo_str)
+    return f"{codigo_str} - {nome}" if nome else codigo_str
 
-        st.markdown("**Outros AG (sem conversão — já em unidade final)**")
-        c1, c2, c3, c4, c5 = st.columns(5)
-        chapatex_pa = c1.number_input("Chapatex (Und)", min_value=0, step=1, key="outros_pa_chapatex")
-        pbr1_pa = c2.number_input("Pallet PBR1", min_value=0, step=1, key="outros_pa_pbr1")
-        pbr2_pa = c3.number_input("Pallet PBR2", min_value=0, step=1, key="outros_pa_pbr2")
-        barril30_pa = c4.number_input("Barril 30L", min_value=0, step=1, key="outros_pa_barril30")
-        barril50_pa = c5.number_input("Barril 50L", min_value=0, step=1, key="outros_pa_barril50")
 
-        if st.form_submit_button("Salvar conferência"):
-            mapa_numero = limpa_mapa(mapa_texto.strip())
-            if not mapa_texto.strip():
-                st.error("Informe o número do mapa antes de salvar.")
-            elif "," in mapa_texto:
-                st.error("Um mapa por vez — se tiver mais de um, salve cada um separadamente (o formulário limpa sozinho depois de salvar).")
-            else:
-                data_str_pa = data_pa.strftime("%d/%m/%Y")
-                gf_600 = valores_familia_pa.get("600ml", 0) + valores_familia_pa.get("Verde 600", 0)
-                linhas_pa = []
+def com_apelido(codigo: str, rotulo_base: str) -> str:
+    apelido = MAPA_APELIDOS.get(str(codigo).strip())
+    if apelido: return f"{rotulo_base} ({apelido})"
+    return rotulo_base
 
-                for familia, qtd_cx in valores_familia_pa.items():
-                    if qtd_cx > 0:
-                        r = REGRAS_VAZIO[familia]
-                        gf = gf_600 if familia == "600ml" else (0 if familia == "Verde 600" else qtd_cx * r["garrafeiras_por_cx"])
-                        linhas_pa.append({
-                            "Data": data_str_pa,
-                            "PA": pa_escolhido,
-                            "Mapa": mapa_numero,
-                            "Familia": familia,
-                            "Caixas": qtd_cx,
-                            "Garrafas": qtd_cx * r["garrafas_por_cx"],
-                            "Garrafeiras": gf,
-                            "Unidades": 0,
-                        })
 
-                for familia_outros, qtd_un in [
-                    ("Chapatex", chapatex_pa), ("Pallet PBR1", pbr1_pa), ("Pallet PBR2", pbr2_pa),
-                    ("Barril 30L", barril30_pa), ("Barril 50L", barril50_pa),
-                ]:
-                    if qtd_un > 0:
-                        linhas_pa.append({
-                            "Data": data_str_pa,
-                            "PA": pa_escolhido,
-                            "Mapa": mapa_numero,
-                            "Familia": familia_outros,
-                            "Caixas": 0,
-                            "Garrafas": 0,
-                            "Garrafeiras": 0,
-                            "Unidades": qtd_un,
-                        })
+# =========================================================================
+# APOIO PARA O PAINEL EXECUTIVO (usado só pelo app operacional)
+# =========================================================================
 
-                if linhas_pa:
-                    acumular_historico(pd.DataFrame(linhas_pa), "VazioPA", ["Data", "PA", "Mapa", "Familia"])
-                    st.success(f"✅ Retorno do mapa {mapa_numero} salvo com sucesso!")
+def coletar_datas_disponiveis(*nomes_abas: str) -> list[str]:
+    datas = set()
+    for nome_aba in nomes_abas:
+        hist = ler_aba_historico(nome_aba)
+        if "Data" in hist.columns:
+            datas.update(hist["Data"].dropna().astype(str).unique())
+    try:
+        return sorted(datas, key=lambda d: pd.to_datetime(d, dayfirst=True), reverse=True)
+    except Exception:
+        return sorted(datas, reverse=True)
+
+
+def calcular_totais_por_familia(data_str: str, familias_exibicao: list[str]) -> tuple[dict, dict, dict]:
+    dict_cheio = {f: 0 for f in familias_exibicao}
+    dict_venda = {f: 0 for f in familias_exibicao}
+    dict_vazio = {f: 0 for f in familias_exibicao}
+
+    hist_cheio = ler_aba_historico("Cheio")
+    if not hist_cheio.empty:
+        hist_cheio = hist_cheio[hist_cheio["Data"].astype(str) == data_str]
+        for _, row in hist_cheio.iterrows():
+            fam = str(row.get("Material", ""))
+            if fam in dict_cheio:
+                if "Barril" in fam:
+                    dict_cheio[fam] += row.get("Barris", 0)
                 else:
-                    st.warning("Nenhuma quantidade foi informada para salvar.")
-
-    df_vazio_pa = ler_aba_historico("VazioPA")
-    if not df_vazio_pa.empty:
-        st.divider()
-        st.markdown("### 🚚 Detalhe de Retorno por Mapa")
-
-        if "Unidades" not in df_vazio_pa.columns:
-            df_vazio_pa["Unidades"] = 0
-
-        colunas_exibicao = ["Data", "PA", "Mapa", "Familia", "Caixas", "Garrafas", "Garrafeiras", "Unidades"]
-        df_exibicao = df_vazio_pa[colunas_exibicao].copy()
-
-        for col in ["Caixas", "Garrafas", "Garrafeiras", "Unidades"]:
-            df_exibicao[col] = pd.to_numeric(df_exibicao[col], errors='coerce').fillna(0).astype(int)
-
-        df_exibicao["Data_Sort"] = pd.to_datetime(df_exibicao["Data"], format="%d/%m/%Y", errors="coerce")
-        df_exibicao = df_exibicao.sort_values(by=["Data_Sort", "Mapa"], ascending=[False, True]).drop(columns=["Data_Sort"])
-
-        st.dataframe(df_exibicao, width='stretch', hide_index=True)
-
-        st.markdown("### 📊 Resumo Físico por PA e Família")
-        resumo_pa_familia = df_vazio_pa.groupby(["PA", "Familia"])[["Caixas", "Garrafas", "Garrafeiras", "Unidades"]].sum().reset_index()
-        resumo_pa_familia[["Caixas", "Garrafas", "Garrafeiras", "Unidades"]] = resumo_pa_familia[["Caixas", "Garrafas", "Garrafeiras", "Unidades"]].astype(int)
-        st.dataframe(resumo_pa_familia, width='stretch', hide_index=True)
-
-        st.divider()
-        st.markdown("### 🛠️ Editar ou Apagar Registros")
-
-        with st.expander("🗑️ Selecionar Mapa para Exclusão", expanded=False):
-            c_data, c_mapa, c_btn = st.columns([1, 1, 1])
-            datas_existentes = sorted(df_vazio_pa["Data"].unique(), key=lambda d: pd.to_datetime(d, dayfirst=True), reverse=True)
-            del_data = c_data.selectbox("Data da descarga", datas_existentes, key="del_data_pa")
-
-            mapas_na_data = sorted(df_vazio_pa[df_vazio_pa["Data"] == del_data]["Mapa"].astype(str).unique())
-            del_mapa = c_mapa.selectbox("Número do Mapa", mapas_na_data, key="del_mapa_pa")
-
-            c_btn.write("")
-            c_btn.write("")
-            if c_btn.button("🗑️ Apagar este Mapa", type="primary", use_container_width=True):
-                df_restante = df_vazio_pa[~((df_vazio_pa["Data"] == del_data) & (df_vazio_pa["Mapa"].astype(str) == del_mapa))]
-                salvar_aba_historico("VazioPA", df_restante)
-                st.rerun()
-
-
-# =========================================================================
-# ABA DE CONCILIAÇÃO POR MAPA PA (VENDA x RETORNO CONFERENTE)
-# =========================================================================
-with aba_conciliacao:
-    st.header("⚖️ Conciliação de Mapas PA (Saída vs. Retorno conferente)")
-    st.caption("Cruza as quantidades físicas vendidas na Operação 554 com o que foi conferido no retorno do PA. Só entram aqui mapas que foram digitados na aba 'Vazio por PA' — os demais são conciliados na aba 'Conciliação Mapas Sede' (554 vs. 654).")
+                    dict_cheio[fam] += row.get("Garrafas", 0)
 
     hist_venda = ler_aba_historico("Venda")
-    hist_vazio_pa = ler_aba_historico("VazioPA")
-
-    if hist_venda.empty or hist_vazio_pa.empty:
-        st.info("⚠️ Aguardando dados. É necessário ter histórico de Venda (Operação 554) e de Retorno (Vazio por PA) salvos para fazer o cruzamento.")
-    else:
-        # 1. VENDA (SAÍDA)
+    if not hist_venda.empty:
+        hist_venda = hist_venda[hist_venda["Data"].astype(str) == data_str]
         col_desc = next((c for c in ["Descrição", "Descricao"] if c in hist_venda.columns), None)
-        hist_venda["Familia"] = hist_venda[col_desc].astype(str).apply(padronizar_familia) if col_desc else "Outro"
+        for _, row in hist_venda.iterrows():
+            desc = str(row.get(col_desc, "")) if col_desc else ""
+            fam = padronizar_familia(desc)
+            if fam in dict_venda:
+                dict_venda[fam] += row.get("Qtd. Vendida/Movimentada", 0)
 
-        df_venda_ag = hist_venda[hist_venda["Familia"] != "Outro"].copy()
-        df_venda_ag["Mapa"] = df_venda_ag["Mapa"].apply(limpa_mapa)
-
-        venda_agg = df_venda_ag.groupby(["Mapa", "Familia"])["Qtd. Vendida/Movimentada"].sum().reset_index()
-        venda_agg.rename(columns={"Qtd. Vendida/Movimentada": "Qtd_Saida_Unidades"}, inplace=True)
-        venda_agg = venda_agg[venda_agg["Mapa"].isin(MAPAS_COM_CONFERENCIA_PA)]
-
-        # 2. RETORNO DO PA
-        hist_vazio_pa["Mapa"] = hist_vazio_pa["Mapa"].apply(limpa_mapa)
-
-        if "Garrafas" not in hist_vazio_pa.columns: hist_vazio_pa["Garrafas"] = 0
-        if "Unidades" not in hist_vazio_pa.columns: hist_vazio_pa["Unidades"] = 0
-
-        hist_vazio_pa["Qtd_Retorno_Unidades"] = pd.to_numeric(hist_vazio_pa["Garrafas"], errors='coerce').fillna(0) + \
-                                                pd.to_numeric(hist_vazio_pa["Unidades"], errors='coerce').fillna(0)
-
-        vazio_agg = hist_vazio_pa.groupby(["Mapa", "PA", "Familia"])["Qtd_Retorno_Unidades"].sum().reset_index()
-
-        # 3. CRUZAMENTO (MERGE) E CÁLCULO FÍSICO
-        df_concil = pd.merge(venda_agg, vazio_agg, on=["Mapa", "Familia"], how="outer").fillna(0)
-        df_concil["PA"] = df_concil["PA"].replace(0, "Aguardando Retorno")
-
-        df_concil["Fator"] = df_concil["Familia"].apply(fator_conversao_caixas)
-
-        df_concil["Caixas_Saida"] = df_concil["Qtd_Saida_Unidades"] // df_concil["Fator"]
-        df_concil["Soltas_Saida"] = df_concil["Qtd_Saida_Unidades"] % df_concil["Fator"]
-
-        df_concil["Caixas_Retorno"] = df_concil["Qtd_Retorno_Unidades"] // df_concil["Fator"]
-        df_concil["Soltas_Retorno"] = df_concil["Qtd_Retorno_Unidades"] % df_concil["Fator"]
-
-        df_concil["Diferença_Unidades"] = df_concil["Qtd_Retorno_Unidades"] - df_concil["Qtd_Saida_Unidades"]
-
-        # 4. CRIAÇÃO DOS TEXTOS FORMATADOS
-        def formata_cx_un(cx, un, fam):
-            if "Barril" in fam:
-                return f"{int(un)} un" if un > 0 else "0"
-            else:
-                if cx == 0 and un == 0: return "0"
-                res = []
-                if cx > 0: res.append(f"{int(cx)} cx")
-                if un > 0: res.append(f"{int(un)} gf")
-                return " + ".join(res)
-
-        df_concil["Saída"] = df_concil.apply(lambda r: formata_cx_un(r["Caixas_Saida"], r["Soltas_Saida"], r["Familia"]), axis=1)
-        df_concil["Retorno"] = df_concil.apply(lambda r: formata_cx_un(r["Caixas_Retorno"], r["Soltas_Retorno"], r["Familia"]), axis=1)
-
-        def formata_dif(dif, fam):
-            item = "un" if "Barril" in fam else "gf"
-            if dif == 0: return "0"
-            if dif > 0: return f"+{int(dif)} {item}"
-            return f"{int(dif)} {item}"
-
-        df_concil["Diferença"] = df_concil.apply(lambda r: formata_dif(r["Diferença_Unidades"], r["Familia"]), axis=1)
-
-        # LÓGICA DE STATUS INTELIGENTE (VERIFICA SE HOUVE SAÍDA)
-        def status_conciliacao(row):
-            dif = row["Diferença_Unidades"]
-            saida = row["Qtd_Saida_Unidades"]
-
-            if dif == 0:
-                return "✅ Bateu"
-            elif dif < 0:
-                return "❌ Faltou AG"
-            else:  # dif > 0
-                if saida == 0:
-                    return "🔎 Sem Saída (02.05.01)"
+    hist_vazio = ler_aba_historico("Vazio")
+    if not hist_vazio.empty:
+        hist_vazio = hist_vazio[hist_vazio["Data"].astype(str) == data_str]
+        for _, row in hist_vazio.iterrows():
+            fam = str(row.get("Material", ""))
+            if fam in dict_vazio:
+                if "Barril" in fam:
+                    dict_vazio[fam] += row.get("Unidades", 0)
                 else:
-                    return "⚠️ Sobrou AG"
+                    dict_vazio[fam] += row.get("Garrafas", 0)
 
-        df_concil["Status"] = df_concil.apply(status_conciliacao, axis=1)
-
-        # 5. FILTROS E EXIBIÇÃO
-        col_filtro1, col_filtro2, col_filtro3 = st.columns([1, 1, 2])
-
-        lista_pas = ["Todos"] + sorted(df_concil["PA"].unique().tolist())
-        pa_filter = col_filtro1.selectbox("Filtrar por PA:", lista_pas)
-        status_filter = col_filtro2.selectbox("Filtrar por Status:", ["Todos", "❌ Faltou AG", "⚠️ Sobrou AG", "🔎 Sem Saída (02.05.01)", "✅ Bateu"])
-        mapa_search = col_filtro3.text_input("🔍 Pesquisar Mapa Específico (opcional):", "")
-
-        df_display = df_concil.copy()
-
-        if pa_filter != "Todos":
-            df_display = df_display[df_display["PA"] == pa_filter]
-
-        if status_filter != "Todos":
-            df_display = df_display[df_display["Status"] == status_filter]
-
-        if mapa_search.strip() != "":
-            df_display = df_display[df_display["Mapa"].str.contains(limpa_mapa(mapa_search))]
-
-        df_display = df_display[["Mapa", "PA", "Familia", "Saída", "Retorno", "Diferença", "Status"]]
-        df_display = df_display.sort_values(by=["Mapa", "Familia"])
-
-        st.dataframe(
-            df_display.style.map(cor_linha_status, subset=["Status"]),
-            use_container_width=True, hide_index=True
-        )
-
-        st.caption("Nota 1: Mapas com status 'Aguardando Retorno' tiveram venda (saída) na 554, mas o conferente ainda não registrou nenhum retorno para ele na aba 'Vazio por PA'.")
-        st.caption("Nota 2: Mapas com status 'Sem Saída' foram conferidos no PA, mas não constam na carga do 02.05.01. A diferença é sempre exibida na menor unidade física (garrafas ou unidades soltas).")
-
-
-# =========================================================================
-# ABA DE CONCILIAÇÃO POR MAPA SEDE (554 x 654 — sem conferente físico)
-# =========================================================================
-with aba_conciliacao_sede:
-    st.header("🏢 Conciliação de Mapas Sede (554 vs. 654)")
-    st.caption("Cruza item a item o que saiu na Operação 554 com o que foi identificado no retorno da Operação 654 — para todo mapa que NÃO foi digitado na aba 'Vazio por PA' (esses ficam na 'Conciliação Mapas PA').")
-
-    hist_venda_item = ler_aba_historico("Venda")
-    hist_retorno_654 = ler_aba_historico("Retorno654")
-
-    if hist_venda_item.empty or hist_retorno_654.empty:
-        st.info("⚠️ Aguardando dados. É necessário ter histórico de Venda (554) e Retorno (654) salvos para cruzar.")
-    else:
-        hist_venda_item = hist_venda_item.copy()
-        hist_venda_item["Mapa"] = hist_venda_item["Mapa"].apply(limpa_mapa)
-        venda_item_agg = hist_venda_item.groupby(["Mapa", "Material"])["Qtd. Vendida/Movimentada"].sum().reset_index().rename(columns={"Qtd. Vendida/Movimentada": "Qtd_Saida_554"})
-
-        hist_retorno_654 = hist_retorno_654.copy()
-        hist_retorno_654["Mapa"] = hist_retorno_654["Mapa"].apply(limpa_mapa)
-        retorno_item_agg = hist_retorno_654.groupby(["Mapa", "Material"])["Qtd_Retorno_654"].sum().reset_index()
-
-        # Valor mais recente (por data) de uma coluna qualquer, por mapa — usado pra Data e Depósito
-        def valor_mais_recente_por_mapa(df, coluna):
-            if df.empty or "Data" not in df.columns or coluna not in df.columns:
-                return {}
-            tmp = df.copy()
-            tmp["_dt"] = pd.to_datetime(tmp["Data"], dayfirst=True, errors="coerce")
-            tmp = tmp.dropna(subset=["_dt"])
-            if tmp.empty:
-                return {}
-            idx = tmp.groupby("Mapa")["_dt"].idxmax()
-            return tmp.loc[idx].set_index("Mapa")[coluna].to_dict()
-
-        data_saida_por_mapa = valor_mais_recente_por_mapa(hist_venda_item, "Data")
-        data_retorno_por_mapa = valor_mais_recente_por_mapa(hist_retorno_654, "Data")
-        deposito_saida_por_mapa = valor_mais_recente_por_mapa(hist_venda_item, "Depósito")
-        deposito_retorno_por_mapa = valor_mais_recente_por_mapa(hist_retorno_654, "Depósito")
-
-        # Descrição: junta a descrição de quem tiver (Venda e/ou Retorno654), pra nenhum item ficar em branco
-        col_desc_venda = next((c for c in ["Descrição", "Descricao"] if c in hist_venda_item.columns), None)
-        col_desc_retorno = next((c for c in ["Descrição", "Descricao"] if c in hist_retorno_654.columns), None)
-
-        partes_desc = []
-        if col_desc_venda:
-            partes_desc.append(hist_venda_item[["Material", col_desc_venda]].rename(columns={col_desc_venda: "Desc_AG"}))
-        if col_desc_retorno:
-            partes_desc.append(hist_retorno_654[["Material", col_desc_retorno]].rename(columns={col_desc_retorno: "Desc_AG"}))
-
-        desc_por_material = None
-        if partes_desc:
-            desc_por_material = pd.concat(partes_desc, ignore_index=True)
-            desc_por_material = desc_por_material[desc_por_material["Desc_AG"].astype(str).str.strip() != ""]
-            desc_por_material = desc_por_material.drop_duplicates(subset=["Material"], keep="first")
-
-        df_concil_sede = pd.merge(venda_item_agg, retorno_item_agg, on=["Mapa", "Material"], how="outer").fillna(0)
-        df_concil_sede = df_concil_sede[~df_concil_sede["Mapa"].isin(MAPAS_COM_CONFERENCIA_PA)]
-
-        df_concil_sede["Data Saída"] = df_concil_sede["Mapa"].map(data_saida_por_mapa).fillna("-")
-        df_concil_sede["Data Retorno"] = df_concil_sede["Mapa"].map(data_retorno_por_mapa).fillna("-")
-        df_concil_sede["Depósito Saída"] = df_concil_sede["Mapa"].map(deposito_saida_por_mapa).apply(nome_deposito)
-        df_concil_sede["Depósito Retorno"] = df_concil_sede["Mapa"].map(deposito_retorno_por_mapa).apply(nome_deposito)
-
-        if desc_por_material is not None:
-            df_concil_sede = df_concil_sede.merge(desc_por_material, on="Material", how="left")
-            df_concil_sede["AG"] = [
-                com_apelido(cod, str(desc)) for cod, desc in zip(df_concil_sede["Material"], df_concil_sede["Desc_AG"].fillna(""))
-            ]
-        else:
-            df_concil_sede["AG"] = df_concil_sede["Material"]
-
-        # Quantidades sempre em número inteiro (sem casas decimais sobrando)
-        df_concil_sede["Qtd_Saida_554"] = df_concil_sede["Qtd_Saida_554"].round(0).astype(int)
-        df_concil_sede["Qtd_Retorno_654"] = df_concil_sede["Qtd_Retorno_654"].round(0).astype(int)
-        df_concil_sede["Diferença_Num"] = df_concil_sede["Qtd_Retorno_654"] - df_concil_sede["Qtd_Saida_554"]
-
-        # Classifica o tipo físico do item (Garrafa/Garrafeira/Barril/Outro) pra decidir cx+gf vs. un
-        df_concil_sede["Tipo"] = df_concil_sede["Desc_AG"].fillna("").apply(classificar_tipo_generico) if "Desc_AG" in df_concil_sede.columns else "Outro"
-        df_concil_sede["Familia"] = df_concil_sede["Desc_AG"].fillna("").apply(padronizar_familia) if "Desc_AG" in df_concil_sede.columns else "Outro"
-
-        df_concil_sede["Saída (554)"] = df_concil_sede.apply(lambda r: formata_qtd_fisica(r["Qtd_Saida_554"], r["Tipo"], r["Familia"]), axis=1)
-        df_concil_sede["Retorno (654)"] = df_concil_sede.apply(lambda r: formata_qtd_fisica(r["Qtd_Retorno_654"], r["Tipo"], r["Familia"]), axis=1)
-        df_concil_sede["Diferença"] = df_concil_sede.apply(lambda r: formata_diferenca_fisica(r["Diferença_Num"], r["Tipo"], r["Familia"]), axis=1)
-
-        def status_sede(row):
-            dif = row["Diferença_Num"]
-            saida = row["Qtd_Saida_554"]
-            retorno = row["Qtd_Retorno_654"]
-            if saida == 0 and retorno > 0:
-                return "🔎 Sem Saída (554)"
-            if saida > 0 and retorno == 0:
-                return "⏳ Aguardando Retorno (654)"
-            if dif == 0:
-                return "✅ Bateu"
-            if dif < 0:
-                return "❌ Faltou (não retornou)"
-            return "⚠️ Sobrou no Retorno"
-
-        df_concil_sede["Status"] = df_concil_sede.apply(status_sede, axis=1)
-
-        datas_disponiveis_sede = sorted(
-            {d for d in pd.concat([df_concil_sede["Data Saída"], df_concil_sede["Data Retorno"]]) if d != "-"},
-            key=lambda d: pd.to_datetime(d, dayfirst=True, errors="coerce"),
-            reverse=True,
-        )
-
-        col_f0, col_f1, col_f2, col_f3 = st.columns([1, 1, 1, 2])
-        data_filter_sede = col_f0.selectbox(
-            "Filtrar por Data:",
-            ["Todas"] + datas_disponiveis_sede,
-            key="data_sede",
-        )
-        status_filter_sede = col_f1.selectbox(
-            "Filtrar por Status:",
-            ["Todos", "❌ Faltou (não retornou)", "⚠️ Sobrou no Retorno", "🔎 Sem Saída (554)", "⏳ Aguardando Retorno (654)", "✅ Bateu"],
-            key="status_sede",
-        )
-        mapa_search_sede = col_f2.text_input("🔍 Pesquisar Mapa:", "", key="mapa_sede")
-        material_search_sede = col_f3.text_input("🔍 Pesquisar Material/AG:", "", key="material_sede")
-
-        df_display_sede = df_concil_sede.copy()
-        if data_filter_sede != "Todas":
-            df_display_sede = df_display_sede[
-                (df_display_sede["Data Saída"] == data_filter_sede) | (df_display_sede["Data Retorno"] == data_filter_sede)
-            ]
-        if status_filter_sede != "Todos":
-            df_display_sede = df_display_sede[df_display_sede["Status"] == status_filter_sede]
-        if mapa_search_sede.strip():
-            df_display_sede = df_display_sede[df_display_sede["Mapa"].str.contains(limpa_mapa(mapa_search_sede))]
-        if material_search_sede.strip():
-            df_display_sede = df_display_sede[df_display_sede["AG"].str.contains(material_search_sede, case=False, na=False)]
-
-        colunas_exibir_sede = ["Mapa", "Data Saída", "Data Retorno", "Depósito Saída", "Depósito Retorno", "AG", "Saída (554)", "Retorno (654)", "Diferença", "Status"]
-        df_display_sede = df_display_sede[colunas_exibir_sede].sort_values(by=["Mapa", "AG"])
-
-        st.dataframe(
-            df_display_sede.style.map(cor_linha_status, subset=["Status"]),
-            use_container_width=True, hide_index=True,
-        )
-
-        st.caption("Nota: comparação item a item na unidade bruta da movimentação (sem converter pra caixa) — diferente da Conciliação Mapas PA, que usa a contagem física convertida pelo conferente.")
-
-        # =================================================================
-        # CONFERÊNCIA CRUZADA: GARRAFA × GARRAFEIRA, POR MAPA
-        # Pega o caso de faturar quantidade de garrafeira desproporcional à
-        # quantidade de garrafa (ex: 1 garrafeira pra 48 garrafas) — mesmo que
-        # cada item, individualmente, bata perfeito entre Saída e Retorno.
-        # =================================================================
-        st.divider()
-        st.markdown("### ⚠️ Conferência Garrafa × Garrafeira (por Mapa)")
-        st.caption(
-            "Compara, por mapa, quantas caixas de garrafa (convertidas a partir da quantidade bruta) "
-            "saíram/retornaram contra quantas garrafeiras saíram/retornaram — mesmo com Saída = Retorno "
-            "em cada item, pode haver descompasso entre os dois (ex: faturar 1 garrafeira pra 48 garrafas)."
-        )
-
-        linhas_diverg = []
-        for mapa_val, grupo in df_concil_sede.groupby("Mapa"):
-            garrafas_grp = grupo[grupo["Tipo"] == "Garrafa"].copy()
-            garrafeiras_grp = grupo[grupo["Tipo"] == "Garrafeira"].copy()
-            if garrafas_grp.empty and garrafeiras_grp.empty:
-                continue
-
-            garrafas_grp["FamiliaNorm"] = garrafas_grp["Familia"].apply(familia_normalizada_600)
-            garrafeiras_grp["FamiliaNorm"] = garrafeiras_grp["Material"].map(GARRAFEIRA_FAMILIA)
-
-            familias_presentes = set(garrafas_grp["FamiliaNorm"].dropna()) | set(garrafeiras_grp["FamiliaNorm"].dropna())
-            for fam in familias_presentes:
-                if fam == "Outro" or fam is None:
-                    continue
-                fator = int(fator_conversao_caixas(fam))
-                sg_saida = garrafas_grp.loc[garrafas_grp["FamiliaNorm"] == fam, "Qtd_Saida_554"].sum()
-                sg_retorno = garrafas_grp.loc[garrafas_grp["FamiliaNorm"] == fam, "Qtd_Retorno_654"].sum()
-                sgf_saida = garrafeiras_grp.loc[garrafeiras_grp["FamiliaNorm"] == fam, "Qtd_Saida_554"].sum()
-                sgf_retorno = garrafeiras_grp.loc[garrafeiras_grp["FamiliaNorm"] == fam, "Qtd_Retorno_654"].sum()
-
-                for fluxo, qtd_garrafa, qtd_garrafeira in [
-                    ("Saída", sg_saida, sgf_saida), ("Retorno", sg_retorno, sgf_retorno)
-                ]:
-                    if qtd_garrafa == 0 and qtd_garrafeira == 0:
-                        continue
-                    cx_equiv = int(qtd_garrafa) // fator
-                    gf_soltas = int(qtd_garrafa) % fator
-                    dif = int(qtd_garrafeira) - cx_equiv
-
-                    if dif == 0:
-                        status = "✅ Bateu"
-                    elif dif > 0:
-                        status = "⚠️ Garrafeira a mais"
-                    else:
-                        status = "⚠️ Garrafeira a menos"
-
-                    linhas_diverg.append({
-                        "Mapa": mapa_val, "Família": fam, "Fluxo": fluxo,
-                        "Garrafas (un)": int(qtd_garrafa), "Caixas equiv.": cx_equiv,
-                        "Garrafas soltas": gf_soltas, "Garrafeiras": int(qtd_garrafeira),
-                        "Diferença": dif, "Status": status,
-                    })
-
-        if linhas_diverg:
-            df_diverg = pd.DataFrame(linhas_diverg).sort_values(["Mapa", "Família", "Fluxo"])
-
-            status_filter_diverg = st.selectbox(
-                "Filtrar por Status:",
-                ["Todos", "⚠️ Garrafeira a mais", "⚠️ Garrafeira a menos", "✅ Bateu"],
-                key="status_diverg",
-            )
-            df_diverg_display = df_diverg if status_filter_diverg == "Todos" else df_diverg[df_diverg["Status"] == status_filter_diverg]
-
-            st.dataframe(
-                df_diverg_display.style.map(cor_linha_status, subset=["Status"]),
-                use_container_width=True, hide_index=True,
-            )
-            st.caption(
-                "Diferença > 0 = saiu/retornou garrafeira a mais do que caixas de garrafa fechadas. "
-                "Diferença < 0 = faltou garrafeira pra cobrir as caixas de garrafa."
-            )
-        else:
-            st.caption("Nenhum mapa com garrafa e/ou garrafeira pra comparar ainda.")
+    return dict_cheio, dict_venda, dict_vazio
