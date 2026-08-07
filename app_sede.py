@@ -42,7 +42,17 @@ with st.sidebar:
     st.caption(f"Fonte: {ARQUIVO_MAPAS_AG.name} (atualiza sozinho a cada 5 min)")
     if st.button("🔄 Recarregar tela", width="stretch"):
         st.rerun()
-    data_corte = st.date_input("Considerar movimentações a partir de:", value=date(2026, 8, 1))
+    intervalo_datas = st.date_input(
+        "Considerar movimentações no período:",
+        value=(date(2026, 8, 1), date.today()),
+    )
+    # date_input com range só retorna as duas datas depois que o usuário escolhe as duas
+    # no calendário — enquanto só a primeira estiver selecionada, vem uma tupla de 1 item.
+    if isinstance(intervalo_datas, tuple) and len(intervalo_datas) == 2:
+        data_inicio, data_fim = intervalo_datas
+    else:
+        data_inicio = intervalo_datas[0] if isinstance(intervalo_datas, tuple) else intervalo_datas
+        data_fim = date.today()
 
 # --- De Material: usado pra classificar por Código e pra filtrar itens válidos de AG ---
 df_de_material = carregar(ARQUIVO_DE_MATERIAL)
@@ -50,7 +60,7 @@ if df_de_material is not None and "Promax" in df_de_material.columns:
     df_de_material["Promax"] = normalizar_codigo(df_de_material["Promax"])
 lookup_ag = montar_lookup_ag_por_codigo(df_de_material) if df_de_material is not None else {}
 
-# --- 03.07.13: carrega e filtra pela data de corte, sem gravar nada no Drive ---
+# --- 03.07.13: carrega e filtra pelo período escolhido, sem gravar nada no Drive ---
 df_mapas_ag = carregar(ARQUIVO_MAPAS_AG)
 if df_mapas_ag is not None:
     df_mapas_ag = df_mapas_ag.copy()
@@ -75,15 +85,16 @@ if df_mapas_ag is not None:
 
     if "Data" in df_mapas_ag.columns:
         _dt = pd.to_datetime(df_mapas_ag["Data"], dayfirst=True, errors="coerce")
-        df_mapas_ag = df_mapas_ag[_dt >= pd.Timestamp(data_corte)]
+        df_mapas_ag = df_mapas_ag[(_dt >= pd.Timestamp(data_inicio)) & (_dt <= pd.Timestamp(data_fim))]
 
+_periodo_str = f"{data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}"
 with st.sidebar:
     if df_mapas_ag is None:
         st.error(f"Não encontrei '{ARQUIVO_MAPAS_AG.name}' no Google Drive.")
     elif df_mapas_ag.empty:
-        st.warning(f"'{ARQUIVO_MAPAS_AG.name}' carregado, mas nenhuma linha a partir de {data_corte.strftime('%d/%m/%Y')}.")
+        st.warning(f"'{ARQUIVO_MAPAS_AG.name}' carregado, mas nenhuma linha entre {_periodo_str}.")
     else:
-        st.success(f"{ARQUIVO_MAPAS_AG.name}: {len(df_mapas_ag)} linha(s) a partir de {data_corte.strftime('%d/%m/%Y')}.")
+        st.success(f"{ARQUIVO_MAPAS_AG.name}: {len(df_mapas_ag)} linha(s) entre {_periodo_str}.")
 
 aba_vazio_pa, aba_conciliacao, aba_conciliacao_sede, aba_categorias_extra = st.tabs(
     ["Vazio por PA", "Conciliação Mapas PA", "Conciliação Mapas Sede", "Outras Categorias"]
