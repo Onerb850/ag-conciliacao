@@ -600,6 +600,24 @@ def familia_tipo_por_codigo(codigo, lookup: dict) -> tuple:
 
 
 # =========================================================================
+# CATEGORIAS EXTRAS DO RELATÓRIO 03.07.13 — além de Vazio (que já vira Venda/
+# Retorno654 e alimenta a Conciliação Mapas PA/Sede principal). Cada tupla:
+# (nome de exibição, coluna Previsto no CSV, coluna Realizado no CSV). Guardadas
+# numa aba própria do histórico (NOME_ABA_CATEGORIAS_EXTRA), sem passar pela
+# conferência manual do Vazio por PA — comparação direta Previsto x Realizado
+# do próprio relatório.
+# =========================================================================
+CATEGORIAS_AG_EXTRA = [
+    ("Comodato", "P V Comodato", "R V Comodato"),
+    ("Devolução", "P Devol", "R Devol"),
+    ("Troca", "P Troca", "R Troca"),
+    ("Consignação", "P Consignacao", "R Consignacao"),
+    ("Rec. Consignação", "P Rec Consignacao", "R Rec Consignacao"),
+]
+NOME_ABA_CATEGORIAS_EXTRA = "MapasCategorias"
+
+
+# =========================================================================
 # NOMES DE DEPÓSITO — tabela fixa do Promax (mesma pra todos os armazéns 1/2/3)
 # =========================================================================
 DEPOSITO_NOMES = {
@@ -639,6 +657,57 @@ def com_apelido(codigo: str, rotulo_base: str) -> str:
 # =========================================================================
 # APOIO PARA O PAINEL EXECUTIVO (usado só pelo app operacional)
 # =========================================================================
+
+def valor_mais_recente_por_grupo(df: pd.DataFrame, colunas_grupo: list[str], coluna_data: str, coluna_valor: str) -> pd.DataFrame:
+    """Pra fontes tipo 'retrato' (ex: 03.07.13 — Previsto/Realizado já é o total
+    acumulado daquele mapa, não um incremento diário pra somar), pega o valor da
+    DATA MAIS RECENTE por grupo em vez de somar todas as datas do histórico — evita
+    inflar o total quando o mesmo Mapa+Material foi processado em dias diferentes
+    (ex: uma vez pela fonte antiga, outra pela nova, ou reprocessado após correção).
+    Retorna um DataFrame só com colunas_grupo + coluna_valor."""
+    tmp = df.copy()
+    tmp["_dt"] = pd.to_datetime(tmp[coluna_data], dayfirst=True, errors="coerce")
+    tmp = tmp.sort_values("_dt")
+    tmp = tmp.drop_duplicates(subset=colunas_grupo, keep="last")
+    return tmp[colunas_grupo + [coluna_valor]].reset_index(drop=True)
+
+
+def montar_total_previsto_realizado(hist_venda_vazio: pd.DataFrame, hist_retorno_vazio: pd.DataFrame, hist_categorias: pd.DataFrame) -> pd.DataFrame:
+    """Soma Vazio + todas as categorias extras (Comodato, Devolução, Troca, Consignação,
+    Rec. Consignação) num único Total Previsto e Total Realizado por Mapa+Material — não
+    importa em qual 'espécie' o item saiu ou voltou, só interessa se o total bateu ou não.
+    Usa sempre o valor mais recente de cada fonte (não soma histórico de dias diferentes).
+    Retorna colunas: Mapa, Material, Total_Previsto, Total_Realizado."""
+    partes_p, partes_r = [], []
+
+    if hist_venda_vazio is not None and not hist_venda_vazio.empty and "Qtd. Vendida/Movimentada" in hist_venda_vazio.columns:
+        vp = valor_mais_recente_por_grupo(hist_venda_vazio, ["Mapa", "Material"], "Data", "Qtd. Vendida/Movimentada")
+        partes_p.append(vp.rename(columns={"Qtd. Vendida/Movimentada": "Valor"}))
+
+    if hist_retorno_vazio is not None and not hist_retorno_vazio.empty and "Qtd_Retorno_654" in hist_retorno_vazio.columns:
+        vr = valor_mais_recente_por_grupo(hist_retorno_vazio, ["Mapa", "Material"], "Data", "Qtd_Retorno_654")
+        partes_r.append(vr.rename(columns={"Qtd_Retorno_654": "Valor"}))
+
+    if hist_categorias is not None and not hist_categorias.empty:
+        for _, col_p, col_r in CATEGORIAS_AG_EXTRA:
+            if col_p in hist_categorias.columns:
+                cp = valor_mais_recente_por_grupo(hist_categorias, ["Mapa", "Material"], "Data", col_p)
+                partes_p.append(cp.rename(columns={col_p: "Valor"}))
+            if col_r in hist_categorias.columns:
+                cr = valor_mais_recente_por_grupo(hist_categorias, ["Mapa", "Material"], "Data", col_r)
+                partes_r.append(cr.rename(columns={col_r: "Valor"}))
+
+    df_p = (
+        pd.concat(partes_p, ignore_index=True).groupby(["Mapa", "Material"])["Valor"].sum().reset_index().rename(columns={"Valor": "Total_Previsto"})
+        if partes_p else pd.DataFrame(columns=["Mapa", "Material", "Total_Previsto"])
+    )
+    df_r = (
+        pd.concat(partes_r, ignore_index=True).groupby(["Mapa", "Material"])["Valor"].sum().reset_index().rename(columns={"Valor": "Total_Realizado"})
+        if partes_r else pd.DataFrame(columns=["Mapa", "Material", "Total_Realizado"])
+    )
+
+    return pd.merge(df_p, df_r, on=["Mapa", "Material"], how="outer").fillna(0)
+
 
 def coletar_datas_disponiveis(*nomes_abas: str) -> list[str]:
     datas = set()
