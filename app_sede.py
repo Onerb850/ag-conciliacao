@@ -4,6 +4,7 @@ from datetime import date
 
 from comum import (
     ARQUIVO_DE_MATERIAL,
+    ARQUIVO_MAPAS_AG,
     carregar,
     ler_aba_historico,
     salvar_aba_historico,
@@ -22,6 +23,7 @@ from comum import (
     familia_tipo_por_codigo,
     valor_mais_recente_por_grupo,
     montar_total_previsto_realizado,
+    codigos_fora_do_depara,
     CATEGORIAS_AG_EXTRA,
     NOME_ABA_CATEGORIAS_EXTRA,
 )
@@ -29,8 +31,8 @@ from comum import (
 st.set_page_config(page_title="Conciliação de Mapas (AG)", layout="wide")
 st.title("⚖️ Conciliação de Mapas (AG)")
 st.caption(
-    "Este app só lê o histórico já salvo (historico_ag.xlsx) — não processa CSVs brutos, por isso é bem mais leve. "
-    "Pra alimentar Venda (Previsto x Realizado), use o app 'Operacional'."
+    "Lê o relatório 03.07.13 direto do Google Drive (atualiza sozinho a cada 5 minutos) "
+    "e mantém o histórico (historico_ag.xlsx) sempre em dia — não depende de nenhum outro app rodando."
 )
 
 REGRAS_VAZIO = {
@@ -41,13 +43,113 @@ REGRAS_VAZIO = {
 }
 
 # Lookup Código -> (Familia, Tipo), montado a partir da descrição mestre do De
-# Material.xlsx — é lido aqui direto (app leve, arquivo pequeno) pra classificar
-# os itens de Venda/Retorno pelo Código, em vez de interpretar a descrição
-# abreviada de cada relatório (mais confiável, mesma fonte usada no app Operacional).
+# Material.xlsx — usado tanto pra classificar a conciliação quanto pra filtrar
+# o 03.07.13 pelos códigos válidos de AG.
 df_de_material = carregar(ARQUIVO_DE_MATERIAL)
 if df_de_material is not None and "Promax" in df_de_material.columns:
     df_de_material["Promax"] = normalizar_codigo(df_de_material["Promax"])
 lookup_ag = montar_lookup_ag_por_codigo(df_de_material) if df_de_material is not None else {}
+
+
+# =========================================================================
+# INGESTÃO DO 03.07.13 — antes feita só pelo app Operacional; agora acontece
+# aqui também (esse app não depende mais de nenhum outro pra se manter
+# atualizado). Roda automaticamente toda vez que a página carrega; o cache de
+# carregar() tem validade de 5 minutos, então não sobrecarrega o Google Drive
+# a cada clique — só busca de novo depois desse prazo.
+# =========================================================================
+def _atualizar_historico_a_partir_do_relatorio():
+    df_mapas_ag = carregar(ARQUIVO_MAPAS_AG)
+    if df_mapas_ag is None:
+        return None, "não encontrado"
+
+    df_mapas_ag = df_mapas_ag.copy()
+    df_mapas_ag.columns = df_mapas_ag.columns.str.strip()
+    if "Material" in df_mapas_ag.columns:
+        df_mapas_ag["Material"] = df_mapas_ag["Material"].apply(limpa_mapa)
+    if "Mapa" in df_mapas_ag.columns:
+        df_mapas_ag["Mapa"] = df_mapas_ag["Mapa"].apply(limpa_mapa)
+    if "Descricao" in df_mapas_ag.columns:
+        df_mapas_ag["Descricao"] = df_mapas_ag["Descricao"].astype(str).str.strip()
+
+    colunas_numericas_relatorio = ["P Vazia", "R Vazio"] + [
+        c for _, cp, cr in CATEGORIAS_AG_EXTRA for c in (cp, cr)
+    ]
+    for col_qtd in colunas_numericas_relatorio:
+        if col_qtd in df_mapas_ag.columns:
+            df_mapas_ag[col_qtd] = pd.to_numeric(df_mapas_ag[col_qtd], errors="coerce").fillna(0)
+
+    if df_de_material is not None and "Material" in df_mapas_ag.columns:
+        codigos_validos = set(df_de_material["Promax"].unique())
+        df_mapas_ag = df_mapas_ag[df_mapas_ag["Material"].isin(codigos_validos)]
+
+    colunas_necessarias = {"Material", "Mapa", "P Vazia", "R Vazio"}
+    if not colunas_necessarias.issubset(df_mapas_ag.columns) or df_mapas_ag.empty:
+        return 0, "sem colunas/linhas esperadas"
+
+    colunas_data_mov = ["Data"] if "Data" in df_mapas_ag.columns else []
+    colunas_mapa_mov = ["Mapa"] if "Mapa" in df_mapas_ag.columns else []
+    colunas_desc_mov = ["Descricao"] if "Descricao" in df_mapas_ag.columns else []
+    desc_material = None
+    if colunas_desc_mov:
+        desc_material = (
+            df_mapas_ag.drop_duplicates(subset=["Material"])[["Material"] + colunas_desc_mov]
+            .rename(columns={"Descricao": "Descrição"})
+        )
+
+    grupo_mov = ["Material"] + colunas_data_mov + colunas_mapa_mov
+
+    if "Data" in df_mapas_ag.columns:
+        # Venda (Previsto = P Vazia)
+        resumo_venda = df_mapas_ag.groupby(grupo_mov)["P Vazia"].sum().reset_index().rename(
+            columns={"P Vazia": "Qtd. Vendida/Movimentada"}
+        )
+        if desc_material is not None:
+            resumo_venda = resumo_venda.merge(desc_material, on="Material", how="left")
+        resumo_venda["Qtd. Vendida/Movimentada"] = resumo_venda["Qtd. Vendida/Movimentada"].round(0).astype(int)
+        colunas_historico = ["Material", "Data"] + colunas_mapa_mov + (["Descrição"] if desc_material is not None else [])
+        acumular_historico(resumo_venda[colunas_historico + ["Qtd. Vendida/Movimentada"]], "Venda", ["Material", "Data"] + colunas_mapa_mov)
+
+        # Retorno (Realizado = R Vazio)
+        resumo_retorno = df_mapas_ag.groupby(grupo_mov)["R Vazio"].sum().reset_index().rename(
+            columns={"R Vazio": "Qtd_Retorno_654"}
+        )
+        if desc_material is not None:
+            resumo_retorno = resumo_retorno.merge(desc_material, on="Material", how="left")
+        resumo_retorno["Qtd_Retorno_654"] = resumo_retorno["Qtd_Retorno_654"].round(0).astype(int)
+        acumular_historico(resumo_retorno[colunas_historico + ["Qtd_Retorno_654"]], "Retorno654", ["Material", "Data"] + colunas_mapa_mov)
+
+        # Outras categorias (Comodato, Devolução, Troca, Consignação, Rec. Consignação)
+        colunas_categorias_existentes = [
+            c for _, cp, cr in CATEGORIAS_AG_EXTRA for c in (cp, cr) if c in df_mapas_ag.columns
+        ]
+        if colunas_categorias_existentes:
+            resumo_categorias = df_mapas_ag.groupby(grupo_mov)[colunas_categorias_existentes].sum().reset_index()
+            if desc_material is not None:
+                resumo_categorias = resumo_categorias.merge(desc_material, on="Material", how="left")
+            acumular_historico(
+                resumo_categorias[colunas_historico + colunas_categorias_existentes],
+                NOME_ABA_CATEGORIAS_EXTRA, ["Material", "Data"] + colunas_mapa_mov,
+            )
+
+    return len(df_mapas_ag), None
+
+
+with st.sidebar:
+    st.caption(f"Fonte: {ARQUIVO_MAPAS_AG.name} (atualiza sozinho a cada 5 min)")
+    if st.button("🔄 Recarregar tela", width="stretch"):
+        st.rerun()
+    try:
+        linhas_processadas, aviso = _atualizar_historico_a_partir_do_relatorio()
+        if linhas_processadas is None:
+            st.error(f"Não encontrei '{ARQUIVO_MAPAS_AG.name}' no Google Drive.")
+        elif aviso:
+            st.warning(f"03.07.13 carregado, mas {aviso}.")
+        else:
+            st.success(f"{ARQUIVO_MAPAS_AG.name} processado ({linhas_processadas} linhas).")
+    except Exception as e:
+        st.error(f"Erro ao processar '{ARQUIVO_MAPAS_AG.name}': {e}")
+
 
 aba_vazio_pa, aba_conciliacao, aba_conciliacao_sede, aba_categorias_extra = st.tabs(
     ["Vazio por PA", "Conciliação Mapas PA", "Conciliação Mapas Sede", "Outras Categorias"]
