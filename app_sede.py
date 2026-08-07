@@ -18,9 +18,12 @@ from comum import (
     rotulo_familia_vazio,
     GARRAFEIRA_FAMILIA,
     familia_normalizada_600,
-    nome_deposito,
     montar_lookup_ag_por_codigo,
     familia_tipo_por_codigo,
+    valor_mais_recente_por_grupo,
+    montar_total_previsto_realizado,
+    CATEGORIAS_AG_EXTRA,
+    NOME_ABA_CATEGORIAS_EXTRA,
 )
 
 st.set_page_config(page_title="Conciliação de Mapas (AG)", layout="wide")
@@ -46,8 +49,8 @@ if df_de_material is not None and "Promax" in df_de_material.columns:
     df_de_material["Promax"] = normalizar_codigo(df_de_material["Promax"])
 lookup_ag = montar_lookup_ag_por_codigo(df_de_material) if df_de_material is not None else {}
 
-aba_vazio_pa, aba_conciliacao, aba_conciliacao_sede = st.tabs(
-    ["Vazio por PA", "Conciliação Mapas PA", "Conciliação Mapas Sede"]
+aba_vazio_pa, aba_conciliacao, aba_conciliacao_sede, aba_categorias_extra = st.tabs(
+    ["Vazio por PA", "Conciliação Mapas PA", "Conciliação Mapas Sede", "Outras Categorias"]
 )
 
 # Roteamento entre as duas conciliações: um mapa só entra na Conciliação Mapas PA se
@@ -190,18 +193,22 @@ with aba_conciliacao:
         # 1. VENDA (SAÍDA) — classificada pelo Código do Material via De Material.xlsx,
         # não pela descrição abreviada do relatório (mais confiável).
         hist_venda = hist_venda.copy()
-        familia_tipo_venda = hist_venda["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
-        hist_venda["Familia"] = familia_tipo_venda.apply(lambda ft: ft[0])
-        hist_venda["Tipo"] = familia_tipo_venda.apply(lambda ft: ft[1])
+        # 1. VENDA (SAÍDA) — pega o valor mais recente por Mapa+Material (não soma todas
+        # as datas: o 03.07.13 já traz o total acumulado do mapa, então somar histórico
+        # de dias diferentes infla o número se o mapa foi processado mais de uma vez).
+        # Classificação de Familia/Tipo pelo Código, via De Material.xlsx.
+        hist_venda_latest = valor_mais_recente_por_grupo(hist_venda, ["Mapa", "Material"], "Data", "Qtd. Vendida/Movimentada")
+        familia_tipo_venda = hist_venda_latest["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
+        hist_venda_latest["Familia"] = familia_tipo_venda.apply(lambda ft: ft[0])
+        hist_venda_latest["Tipo"] = familia_tipo_venda.apply(lambda ft: ft[1])
+        hist_venda_latest["Mapa"] = hist_venda_latest["Mapa"].apply(limpa_mapa)
 
         # Só entram na soma por família os itens "soltos" (Garrafa ou Barril) — igual ao
         # Retorno digitado manualmente, que também só conta Garrafas+Unidades e nunca a
         # coluna Garrafeiras. Incluir garrafeira aqui infla a Saída e faz o mapa parecer
         # "faltando" mesmo quando bateu perfeito (garrafeira é conferida à parte, na seção
         # "Conferência Garrafa × Garrafeira" da Conciliação Mapas Sede).
-        df_venda_ag = hist_venda[(hist_venda["Familia"] != "Outro") & (hist_venda["Tipo"] != "Garrafeira")].copy()
-        df_venda_ag["Mapa"] = df_venda_ag["Mapa"].apply(limpa_mapa)
-
+        df_venda_ag = hist_venda_latest[(hist_venda_latest["Familia"] != "Outro") & (hist_venda_latest["Tipo"] != "Garrafeira")].copy()
         venda_agg = df_venda_ag.groupby(["Mapa", "Familia"])["Qtd. Vendida/Movimentada"].sum().reset_index()
         venda_agg.rename(columns={"Qtd. Vendida/Movimentada": "Qtd_Saida_Unidades"}, inplace=True)
         venda_agg = venda_agg[venda_agg["Mapa"].isin(MAPAS_COM_CONFERENCIA_PA)]
@@ -323,19 +330,30 @@ with aba_conciliacao_sede:
 
     hist_venda_item = ler_aba_historico("Venda")
     hist_retorno_654 = ler_aba_historico("Retorno654")
+    hist_categorias_sede = ler_aba_historico(NOME_ABA_CATEGORIAS_EXTRA)
 
     if hist_venda_item.empty or hist_retorno_654.empty:
         st.info("⚠️ Aguardando dados. É necessário ter histórico de Venda (Previsto) e Retorno (Realizado) salvos para cruzar.")
     else:
         hist_venda_item = hist_venda_item.copy()
         hist_venda_item["Mapa"] = hist_venda_item["Mapa"].apply(limpa_mapa)
-        venda_item_agg = hist_venda_item.groupby(["Mapa", "Material"])["Qtd. Vendida/Movimentada"].sum().reset_index().rename(columns={"Qtd. Vendida/Movimentada": "Qtd_Saida_554"})
-
         hist_retorno_654 = hist_retorno_654.copy()
         hist_retorno_654["Mapa"] = hist_retorno_654["Mapa"].apply(limpa_mapa)
-        retorno_item_agg = hist_retorno_654.groupby(["Mapa", "Material"])["Qtd_Retorno_654"].sum().reset_index()
+        if not hist_categorias_sede.empty:
+            hist_categorias_sede = hist_categorias_sede.copy()
+            hist_categorias_sede["Mapa"] = hist_categorias_sede["Mapa"].apply(limpa_mapa)
 
-        # Valor mais recente (por data) de uma coluna qualquer, por mapa — usado pra Data e Depósito
+        # Total combinado: não importa em qual "espécie" o item saiu ou voltou (Vazio,
+        # Comodato, Devolução, Troca, Consignação, Rec. Consignação) — só interessa se o
+        # TOTAL previsto bateu com o TOTAL realizado. Uma diferença só aparece aqui quando
+        # o saldo geral do item não fecha (ver aba "Outras Categorias" pra investigar em
+        # qual espécie especificamente está o furo).
+        df_concil_sede = montar_total_previsto_realizado(hist_venda_item, hist_retorno_654, hist_categorias_sede)
+        df_concil_sede = df_concil_sede.rename(columns={"Total_Previsto": "Qtd_Saida_554", "Total_Realizado": "Qtd_Retorno_654"})
+        df_concil_sede = df_concil_sede[~df_concil_sede["Mapa"].isin(MAPAS_COM_CONFERENCIA_PA)]
+
+        # Valor mais recente (por data) de uma coluna qualquer, por mapa — usado só pra Data
+        # (o 03.07.13 não tem coluna de Depósito, então essa informação não existe mais aqui).
         def valor_mais_recente_por_mapa(df, coluna):
             if df.empty or "Data" not in df.columns or coluna not in df.columns:
                 return {}
@@ -349,8 +367,6 @@ with aba_conciliacao_sede:
 
         data_saida_por_mapa = valor_mais_recente_por_mapa(hist_venda_item, "Data")
         data_retorno_por_mapa = valor_mais_recente_por_mapa(hist_retorno_654, "Data")
-        deposito_saida_por_mapa = valor_mais_recente_por_mapa(hist_venda_item, "Depósito")
-        deposito_retorno_por_mapa = valor_mais_recente_por_mapa(hist_retorno_654, "Depósito")
 
         # Descrição: junta a descrição de quem tiver (Venda e/ou Retorno654), pra nenhum item ficar em branco
         col_desc_venda = next((c for c in ["Descrição", "Descricao"] if c in hist_venda_item.columns), None)
@@ -368,13 +384,8 @@ with aba_conciliacao_sede:
             desc_por_material = desc_por_material[desc_por_material["Desc_AG"].astype(str).str.strip() != ""]
             desc_por_material = desc_por_material.drop_duplicates(subset=["Material"], keep="first")
 
-        df_concil_sede = pd.merge(venda_item_agg, retorno_item_agg, on=["Mapa", "Material"], how="outer").fillna(0)
-        df_concil_sede = df_concil_sede[~df_concil_sede["Mapa"].isin(MAPAS_COM_CONFERENCIA_PA)]
-
         df_concil_sede["Data Saída"] = df_concil_sede["Mapa"].map(data_saida_por_mapa).fillna("-")
         df_concil_sede["Data Retorno"] = df_concil_sede["Mapa"].map(data_retorno_por_mapa).fillna("-")
-        df_concil_sede["Depósito Saída"] = df_concil_sede["Mapa"].map(deposito_saida_por_mapa).apply(nome_deposito)
-        df_concil_sede["Depósito Retorno"] = df_concil_sede["Mapa"].map(deposito_retorno_por_mapa).apply(nome_deposito)
 
         if desc_por_material is not None:
             df_concil_sede = df_concil_sede.merge(desc_por_material, on="Material", how="left")
@@ -396,8 +407,8 @@ with aba_conciliacao_sede:
         df_concil_sede["Familia"] = familia_tipo_serie.apply(lambda ft: ft[0])
         df_concil_sede["Tipo"] = familia_tipo_serie.apply(lambda ft: ft[1])
 
-        df_concil_sede["Saída (554)"] = df_concil_sede.apply(lambda r: formata_qtd_fisica(r["Qtd_Saida_554"], r["Tipo"], r["Familia"]), axis=1)
-        df_concil_sede["Retorno (654)"] = df_concil_sede.apply(lambda r: formata_qtd_fisica(r["Qtd_Retorno_654"], r["Tipo"], r["Familia"]), axis=1)
+        df_concil_sede["Saída (Total)"] = df_concil_sede.apply(lambda r: formata_qtd_fisica(r["Qtd_Saida_554"], r["Tipo"], r["Familia"]), axis=1)
+        df_concil_sede["Retorno (Total)"] = df_concil_sede.apply(lambda r: formata_qtd_fisica(r["Qtd_Retorno_654"], r["Tipo"], r["Familia"]), axis=1)
         df_concil_sede["Diferença"] = df_concil_sede.apply(lambda r: formata_diferenca_fisica(r["Diferença_Num"], r["Tipo"], r["Familia"]), axis=1)
 
         def status_sede(row):
@@ -405,9 +416,9 @@ with aba_conciliacao_sede:
             saida = row["Qtd_Saida_554"]
             retorno = row["Qtd_Retorno_654"]
             if saida == 0 and retorno > 0:
-                return "🔎 Sem Saída (554)"
+                return "🔎 Sem Saída"
             if saida > 0 and retorno == 0:
-                return "⏳ Aguardando Retorno (654)"
+                return "⏳ Aguardando Retorno"
             if dif == 0:
                 return "✅ Bateu"
             if dif < 0:
@@ -422,6 +433,8 @@ with aba_conciliacao_sede:
             reverse=True,
         )
 
+        mostrar_so_divergencias = st.checkbox("🔍 Mostrar só o que tem diferença (recomendado)", value=True, key="so_divergencias_sede")
+
         col_f0, col_f1, col_f2, col_f3 = st.columns([1, 1, 1, 2])
         data_filter_sede = col_f0.selectbox(
             "Filtrar por Data:",
@@ -430,13 +443,15 @@ with aba_conciliacao_sede:
         )
         status_filter_sede = col_f1.selectbox(
             "Filtrar por Status:",
-            ["Todos", "❌ Faltou (não retornou)", "⚠️ Sobrou no Retorno", "🔎 Sem Saída (554)", "⏳ Aguardando Retorno (654)", "✅ Bateu"],
+            ["Todos", "❌ Faltou (não retornou)", "⚠️ Sobrou no Retorno", "🔎 Sem Saída", "⏳ Aguardando Retorno", "✅ Bateu"],
             key="status_sede",
         )
         mapa_search_sede = col_f2.text_input("🔍 Pesquisar Mapa:", "", key="mapa_sede")
         material_search_sede = col_f3.text_input("🔍 Pesquisar Material/AG:", "", key="material_sede")
 
         df_display_sede = df_concil_sede.copy()
+        if mostrar_so_divergencias:
+            df_display_sede = df_display_sede[df_display_sede["Status"] != "✅ Bateu"]
         if data_filter_sede != "Todas":
             df_display_sede = df_display_sede[
                 (df_display_sede["Data Saída"] == data_filter_sede) | (df_display_sede["Data Retorno"] == data_filter_sede)
@@ -448,7 +463,7 @@ with aba_conciliacao_sede:
         if material_search_sede.strip():
             df_display_sede = df_display_sede[df_display_sede["AG"].str.contains(material_search_sede, case=False, na=False)]
 
-        colunas_exibir_sede = ["Mapa", "Data Saída", "Data Retorno", "Depósito Saída", "Depósito Retorno", "AG", "Saída (554)", "Retorno (654)", "Diferença", "Status"]
+        colunas_exibir_sede = ["Mapa", "Data Saída", "Data Retorno", "AG", "Saída (Total)", "Retorno (Total)", "Diferença", "Status"]
         df_display_sede = df_display_sede[colunas_exibir_sede].sort_values(by=["Mapa", "AG"])
 
         st.dataframe(
@@ -456,7 +471,7 @@ with aba_conciliacao_sede:
             use_container_width=True, hide_index=True,
         )
 
-        st.caption("Nota: comparação item a item na unidade bruta do relatório (sem converter pra caixa) — diferente da Conciliação Mapas PA, que usa a contagem física convertida pelo conferente.")
+        st.caption("Nota: Saída/Retorno somam Vazio + Comodato + Devolução + Troca + Consignação + Rec. Consignação — não importa em qual espécie o item saiu ou voltou, só o total. Pra ver em qual espécie está a diferença, use a aba 'Outras Categorias' filtrando pelo mesmo mapa.")
 
         # =================================================================
         # CONFERÊNCIA CRUZADA: GARRAFA × GARRAFEIRA, POR MAPA
@@ -535,3 +550,89 @@ with aba_conciliacao_sede:
             )
         else:
             st.caption("Nenhum mapa com garrafa e/ou garrafeira pra comparar ainda.")
+
+
+# =========================================================================
+# ABA DE OUTRAS CATEGORIAS (Comodato, Devolução, Troca, Consignação, Rec. Consignação)
+# Comparação direta Previsto x Realizado do próprio relatório 03.07.13, categoria
+# por categoria — não passa pela conferência manual do Vazio por PA (essa só
+# cobre a categoria Vazio). Aplica-se a TODO mapa com movimento nessas categorias,
+# independente de já ter sido conferido ou não na aba Vazio por PA.
+# =========================================================================
+with aba_categorias_extra:
+    st.header("📋 Divergências por Categoria")
+    st.caption(
+        "Previsto x Realizado, direto do relatório 03.07.13, pra cada categoria além de Vazio "
+        "(essas não passam pela conferência manual do 'Vazio por PA' — comparação direta do relatório)."
+    )
+
+    hist_categorias = ler_aba_historico(NOME_ABA_CATEGORIAS_EXTRA)
+    if hist_categorias.empty:
+        st.info(
+            "⚠️ Ainda não há dados dessas categorias no histórico. Rode o relatório 03.07.13 "
+            "na aba 'Venda' do app Operacional pra alimentar esta aba."
+        )
+    else:
+        hist_categorias = hist_categorias.copy()
+        hist_categorias["Mapa"] = hist_categorias["Mapa"].apply(limpa_mapa)
+        col_desc_cat = next((c for c in ["Descrição", "Descricao"] if c in hist_categorias.columns), None)
+
+        linhas_cat = []
+        for nome_cat, col_p, col_r in CATEGORIAS_AG_EXTRA:
+            if col_p not in hist_categorias.columns or col_r not in hist_categorias.columns:
+                continue
+            previsto_latest = valor_mais_recente_por_grupo(hist_categorias, ["Mapa", "Material"], "Data", col_p)
+            realizado_latest = valor_mais_recente_por_grupo(hist_categorias, ["Mapa", "Material"], "Data", col_r)
+            cruzado = pd.merge(previsto_latest, realizado_latest, on=["Mapa", "Material"], how="outer").fillna(0)
+            cruzado = cruzado[(cruzado[col_p] != 0) | (cruzado[col_r] != 0)]
+            if cruzado.empty:
+                continue
+            cruzado = cruzado.rename(columns={col_p: "Previsto", col_r: "Realizado"})
+            cruzado["Categoria"] = nome_cat
+            linhas_cat.append(cruzado[["Mapa", "Material", "Categoria", "Previsto", "Realizado"]])
+
+        if not linhas_cat:
+            st.info("Nenhum movimento registrado ainda em Comodato, Devolução, Troca, Consignação ou Rec. Consignação.")
+        else:
+            df_cat = pd.concat(linhas_cat, ignore_index=True)
+            df_cat["Previsto"] = df_cat["Previsto"].round(0).astype(int)
+            df_cat["Realizado"] = df_cat["Realizado"].round(0).astype(int)
+            df_cat["Diferença"] = df_cat["Realizado"] - df_cat["Previsto"]
+
+            if col_desc_cat:
+                desc_lookup_cat = hist_categorias.drop_duplicates(subset=["Material"]).set_index("Material")[col_desc_cat].to_dict()
+                df_cat["AG"] = [com_apelido(cod, str(desc_lookup_cat.get(cod, cod))) for cod in df_cat["Material"]]
+            else:
+                df_cat["AG"] = df_cat["Material"]
+
+            def status_categoria(row):
+                if row["Diferença"] == 0:
+                    return "✅ Bateu"
+                elif row["Diferença"] < 0:
+                    return "❌ Faltou"
+                else:
+                    return "⚠️ Sobrou"
+
+            df_cat["Status"] = df_cat.apply(status_categoria, axis=1)
+
+            col_fc1, col_fc2, col_fc3 = st.columns([1, 1, 2])
+            categoria_filter = col_fc1.selectbox("Filtrar por Categoria:", ["Todas"] + [c[0] for c in CATEGORIAS_AG_EXTRA])
+            status_filter_cat = col_fc2.selectbox("Filtrar por Status:", ["Todos", "❌ Faltou", "⚠️ Sobrou", "✅ Bateu"])
+            mapa_search_cat = col_fc3.text_input("🔍 Pesquisar Mapa:", "", key="mapa_cat_extra")
+
+            df_cat_display = df_cat.copy()
+            if categoria_filter != "Todas":
+                df_cat_display = df_cat_display[df_cat_display["Categoria"] == categoria_filter]
+            if status_filter_cat != "Todos":
+                df_cat_display = df_cat_display[df_cat_display["Status"] == status_filter_cat]
+            if mapa_search_cat.strip():
+                df_cat_display = df_cat_display[df_cat_display["Mapa"].str.contains(limpa_mapa(mapa_search_cat))]
+
+            df_cat_display = df_cat_display[["Mapa", "AG", "Categoria", "Previsto", "Realizado", "Diferença", "Status"]].sort_values(["Mapa", "Categoria"])
+
+            st.dataframe(
+                df_cat_display.style.map(cor_linha_status, subset=["Status"]),
+                use_container_width=True, hide_index=True,
+            )
+
+            st.caption("Cada linha é um Mapa+Item+Categoria com movimento previsto e/ou realizado — itens com Previsto=Realizado=0 nessa categoria não aparecem aqui.")
