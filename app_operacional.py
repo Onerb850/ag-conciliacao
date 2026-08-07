@@ -15,6 +15,7 @@ from comum import (
     classificar_tipo_generico, gdrive_ativo, listar_arquivos_pasta,
     arquivar_dados_antigos, ABAS_ARQUIVAVEIS, NOME_HISTORICO_ARQUIVO,
     nome_deposito, montar_lookup_ag_por_codigo,
+    CATEGORIAS_AG_EXTRA, NOME_ABA_CATEGORIAS_EXTRA,
 )
 
 st.set_page_config(page_title="AG - Operacional", layout="wide")
@@ -86,7 +87,10 @@ with st.sidebar:
                 df_mapas_ag["Mapa"] = df_mapas_ag["Mapa"].apply(limpa_mapa)
             if "Descricao" in df_mapas_ag.columns:
                 df_mapas_ag["Descricao"] = df_mapas_ag["Descricao"].astype(str).str.strip()
-            for col_qtd in ["P Vazia", "R Vazio"]:
+            colunas_numericas_relatorio = ["P Vazia", "R Vazio"] + [
+                c for _, cp, cr in CATEGORIAS_AG_EXTRA for c in (cp, cr)
+            ]
+            for col_qtd in colunas_numericas_relatorio:
                 if col_qtd in df_mapas_ag.columns:
                     df_mapas_ag[col_qtd] = pd.to_numeric(df_mapas_ag[col_qtd], errors="coerce").fillna(0)
             st.success(f"{ARQUIVO_MAPAS_AG.name} — mapas/AG ({len(df_mapas_ag)} linhas)")
@@ -294,6 +298,24 @@ with aba_movimentacao:
 
                 st.markdown("**Detalhe por produto — Retorno (Realizado)**")
                 st.dataframe(resumo_retorno.sort_values("Qtd_Retorno_654", ascending=False), width='stretch')
+
+            # --- Outras categorias (Comodato, Devolução, Troca, Consignação, Rec. Consignação) ---
+            # Guardadas numa aba própria (MapasCategorias), sem passar pela conferência manual
+            # do Vazio por PA — usadas na aba "Outras Categorias" do app de Conciliação.
+            colunas_categorias_existentes = [
+                c for _, cp, cr in CATEGORIAS_AG_EXTRA for c in (cp, cr) if c in df_mapas_ag.columns
+            ]
+            if colunas_categorias_existentes and "Data" in df_mapas_ag.columns:
+                resumo_categorias = df_mapas_ag.groupby(grupo_mov)[colunas_categorias_existentes].sum().reset_index()
+                if desc_material is not None:
+                    resumo_categorias = resumo_categorias.merge(desc_material, on="Material", how="left")
+
+                colunas_historico_cat = ["Material", "Data"] + colunas_mapa_mov + (["Descrição"] if desc_material is not None else [])
+                chave_historico_cat = ["Material", "Data"] + colunas_mapa_mov
+                acumular_historico(
+                    resumo_categorias[colunas_historico_cat + colunas_categorias_existentes],
+                    NOME_ABA_CATEGORIAS_EXTRA, chave_historico_cat,
+                )
         else:
             faltando = colunas_necessarias - set(df_mapas_ag.columns)
             st.error(f"O relatório 03.07.13 carregado não tem as colunas esperadas: {', '.join(sorted(faltando))}.")
@@ -447,6 +469,22 @@ with aba_dados:
                 st.write(f"- **{aba_nome}**: {arquivados} linha(s) movida(s) pro arquivo, {ativos} continuam ativas")
             else:
                 st.write(f"- **{aba_nome}**: nada pra arquivar ({ativos} linha(s) já dentro do período)")
+
+    st.divider()
+    st.subheader("🧹 Zerar histórico de Venda / Retorno / Categorias")
+    st.caption(
+        "Use isto uma vez pra limpar dados residuais de antes da migração pro relatório 03.07.13 "
+        "(ex: coluna Depósito, que só existia no 02.05.01 antigo). Apaga TUDO das abas Venda, "
+        "Retorno654 e MapasCategorias — depois é só rodar o 03.07.13 de novo na aba Venda pra "
+        "repopular com dados limpos. Não mexe em Cheio, Vazio, nem VazioPA."
+    )
+    confirmar_zerar = st.checkbox("Sim, quero apagar esse histórico e recomeçar do zero", key="confirmar_zerar_venda")
+    if st.button("🧹 Zerar agora", disabled=not confirmar_zerar):
+        salvar_aba_historico("Venda", pd.DataFrame())
+        salvar_aba_historico("Retorno654", pd.DataFrame())
+        salvar_aba_historico(NOME_ABA_CATEGORIAS_EXTRA, pd.DataFrame())
+        st.success("Histórico zerado. Rode o relatório 03.07.13 de novo na aba 'Venda' pra repopular.")
+        st.rerun()
 
     with st.expander("📚 Consultar histórico arquivado (dados antigos)"):
         aba_consulta = st.selectbox("Qual histórico consultar:", ABAS_ARQUIVAVEIS, key="aba_consulta_arquivo")
