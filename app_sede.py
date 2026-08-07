@@ -26,6 +26,7 @@ from comum import (
 
 st.set_page_config(page_title="Conciliação de Mapas (AG)", layout="wide")
 st.title("⚖️ Conciliação de Mapas (AG)")
+st.caption("_\"Balança enganosa é abominação ao SENHOR, mas o peso justo lhe é agradável.\" — Provérbios 11:1_")
 st.caption(
     "Lê o relatório 03.07.13 direto do Google Drive (atualiza sozinho a cada 5 minutos) e cruza na hora — "
     "não guarda histórico acumulado, só usa o que está no relatório agora, a partir da data de corte ao lado."
