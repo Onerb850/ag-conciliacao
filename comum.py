@@ -190,7 +190,7 @@ def ler_csv_robusto(caminho: Path) -> pd.DataFrame:
         return _ler_csv_bytes(f.read())
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=300)
 def carregar(caminho: Path) -> pd.DataFrame | None:
     """Modo LOCAL: lê do disco pelo caminho de sempre.
     Modo DRIVE: ignora o caminho e busca na pasta do Drive um arquivo cujo nome
