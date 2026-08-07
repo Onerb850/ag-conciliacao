@@ -24,10 +24,13 @@ st.caption("Painel, Venda (Previsto x Realizado), Cheio e Vazio (cada um já com
 
 # --- CARREGAMENTO DE ARQUIVOS (SIDEBAR) ---
 with st.sidebar:
-    if st.button("🔄 Atualizar dados", width="stretch"):
-        st.cache_data.clear()
+    if st.button("🔄 Recarregar tela", width="stretch"):
         st.rerun()
-    st.caption("Os arquivos brutos só são relidos quando você aperta esse botão.")
+    st.caption(
+        "Os arquivos são relidos automaticamente do Google Drive a cada 5 minutos — "
+        "não precisa fazer nada além de subir o arquivo novo lá e esperar (ou recarregar "
+        "a página no navegador depois de alguns minutos)."
+    )
 
     if gdrive_ativo():
         with st.expander("🔍 Diagnóstico Google Drive"):
