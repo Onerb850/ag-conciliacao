@@ -244,6 +244,17 @@ with aba_conciliacao:
         venda_agg.rename(columns={"P Vazia": "Qtd_Saida_Unidades"}, inplace=True)
         venda_agg = venda_agg[venda_agg["Mapa"].isin(MAPAS_COM_CONFERENCIA_PA)]
 
+        # Data de saída de cada mapa (do relatório 03.07.13) — mostrada na tabela pra
+        # ajudar a localizar/conferir o mapa.
+        data_por_mapa_pa = {}
+        if "Data" in df_mapas_ag.columns:
+            _tmp_data = df_mapas_ag.copy()
+            _tmp_data["_dt"] = pd.to_datetime(_tmp_data["Data"], dayfirst=True, errors="coerce")
+            _tmp_data = _tmp_data.dropna(subset=["_dt"])
+            if not _tmp_data.empty:
+                _idx_data = _tmp_data.groupby("Mapa")["_dt"].idxmax()
+                data_por_mapa_pa = _tmp_data.loc[_idx_data].set_index("Mapa")["Data"].to_dict()
+
         # 2. RETORNO DO PA
         hist_vazio_pa = _hist_vazio_pa_bruto.copy()
         hist_vazio_pa["Mapa"] = hist_vazio_pa["Mapa"].apply(limpa_mapa)
@@ -267,6 +278,7 @@ with aba_conciliacao:
             lambda r: mapa_pa_lookup.get(r["Mapa"], "Aguardando Retorno") if r["PA"] == 0 else r["PA"],
             axis=1,
         )
+        df_concil["Data"] = df_concil["Mapa"].map(data_por_mapa_pa).fillna("-")
 
         df_concil["Fator"] = df_concil["Familia"].apply(fator_conversao_caixas)
 
@@ -334,7 +346,7 @@ with aba_conciliacao:
         if mapa_search.strip() != "":
             df_display = df_display[df_display["Mapa"].str.contains(limpa_mapa(mapa_search))]
 
-        df_display = df_display[["Mapa", "PA", "Familia", "Saída", "Retorno", "Diferença", "Status"]]
+        df_display = df_display[["Mapa", "Data", "PA", "Familia", "Saída", "Retorno", "Diferença", "Status"]]
         df_display = df_display.sort_values(by=["Mapa", "Familia"])
 
         st.dataframe(
