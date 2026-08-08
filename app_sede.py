@@ -244,6 +244,42 @@ with aba_vazio_pa:
         st.divider()
         st.markdown("### 🛠️ Editar ou Apagar Registros")
 
+        with st.expander("✏️ Editar um item específico (sem apagar o mapa inteiro)", expanded=False):
+            c_data_e, c_mapa_e = st.columns(2)
+            datas_existentes_e = sorted(df_vazio_pa["Data"].unique(), key=lambda d: pd.to_datetime(d, dayfirst=True), reverse=True)
+            edit_data = c_data_e.selectbox("Data da descarga", datas_existentes_e, key="edit_data_pa")
+
+            mapas_na_data_e = sorted(df_vazio_pa[df_vazio_pa["Data"] == edit_data]["Mapa"].astype(str).unique())
+            edit_mapa = c_mapa_e.selectbox("Número do Mapa", mapas_na_data_e, key="edit_mapa_pa")
+
+            df_mapa_editar = df_vazio_pa[(df_vazio_pa["Data"] == edit_data) & (df_vazio_pa["Mapa"].astype(str) == edit_mapa)]
+
+            if df_mapa_editar.empty:
+                st.info("Nenhum item encontrado pra esse mapa/data.")
+            else:
+                familias_disponiveis = sorted(df_mapa_editar["Familia"].unique())
+                edit_familia = st.selectbox("Item (Família) para editar", familias_disponiveis, key="edit_familia_pa")
+
+                linha_atual = df_mapa_editar[df_mapa_editar["Familia"] == edit_familia].iloc[0]
+                pa_atual = linha_atual["PA"]
+
+                st.caption(f"Editando: Mapa {edit_mapa} · {pa_atual} · {edit_data} · {edit_familia}")
+
+                ce1, ce2, ce3, ce4 = st.columns(4)
+                novo_caixas = ce1.number_input("Caixas", min_value=0, step=1, value=int(linha_atual.get("Caixas", 0)), key="edit_caixas")
+                novo_garrafas = ce2.number_input("Garrafas", min_value=0, step=1, value=int(linha_atual.get("Garrafas", 0)), key="edit_garrafas")
+                novo_garrafeiras = ce3.number_input("Garrafeiras", min_value=0, step=1, value=int(linha_atual.get("Garrafeiras", 0)), key="edit_garrafeiras")
+                novo_unidades = ce4.number_input("Unidades", min_value=0, step=1, value=int(linha_atual.get("Unidades", 0)), key="edit_unidades")
+
+                if st.button("💾 Salvar edição", type="primary", key="salvar_edicao_pa"):
+                    nova_linha = pd.DataFrame([{
+                        "Data": edit_data, "PA": pa_atual, "Mapa": edit_mapa, "Familia": edit_familia,
+                        "Caixas": novo_caixas, "Garrafas": novo_garrafas, "Garrafeiras": novo_garrafeiras, "Unidades": novo_unidades,
+                    }])
+                    acumular_historico(nova_linha, "VazioPA", ["Data", "PA", "Mapa", "Familia"])
+                    st.success(f"✅ Item '{edit_familia}' do mapa {edit_mapa} atualizado!")
+                    st.rerun()
+
         with st.expander("🗑️ Selecionar Mapa para Exclusão", expanded=False):
             c_data, c_mapa, c_btn = st.columns([1, 1, 1])
             datas_existentes = sorted(df_vazio_pa["Data"].unique(), key=lambda d: pd.to_datetime(d, dayfirst=True), reverse=True)
@@ -417,13 +453,25 @@ with aba_conciliacao:
 
         pas_no_resumo = sorted(df_display["PA"].unique().tolist())
         ORDEM_STATUS_PA = ["❌ Faltou AG", "⚠️ Sobrou AG", "✅ Bateu"]
+
+        # Por enquanto, sobra de Pallet/Chapatex não derruba o status do mapa no resumo
+        # (só Garrafa/Garrafeira/Barril contam pra isso) — o item continua aparecendo
+        # normal na tabela de detalhe, só não conta contra o mapa no card.
+        FAMILIAS_IGNORAR_SOBRA_RESUMO = {"Pallet PBR1", "Pallet PBR2", "Chapatex"}
+
         for pa_nome in pas_no_resumo:
-            df_pa_atual = df_display[df_display["PA"] == pa_nome]
+            df_pa_atual = df_display[df_display["PA"] == pa_nome].copy()
             st.markdown(
                 f"""<div style="display:inline-block; background-color:#e2e6ea; color:#212529; font-weight:700; font-size:15px; padding:6px 16px; border-radius:20px; margin-bottom:10px;">📍 {pa_nome}</div>""",
                 unsafe_allow_html=True,
             )
-            status_mapas_pa = status_por_mapa(df_pa_atual, ORDEM_STATUS_PA)
+            df_pa_atual["Status_Resumo"] = df_pa_atual.apply(
+                lambda r: "✅ Bateu" if (r["Status"] == "⚠️ Sobrou AG" and r["Familia"] in FAMILIAS_IGNORAR_SOBRA_RESUMO) else r["Status"],
+                axis=1,
+            )
+            status_mapas_pa = df_pa_atual.groupby("Mapa")["Status_Resumo"].apply(
+                lambda s: next((st_ for st_ in ORDEM_STATUS_PA if st_ in set(s)), ORDEM_STATUS_PA[-1])
+            )
             bateu_pa = int((status_mapas_pa == "✅ Bateu").sum())
             faltou_pa = int((status_mapas_pa == "❌ Faltou AG").sum())
             sobrou_pa = int((status_mapas_pa == "⚠️ Sobrou AG").sum())
