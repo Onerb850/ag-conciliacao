@@ -35,34 +35,53 @@ REGRAS_VAZIO = {
     "1L": {"garrafas_por_cx": 12, "garrafeiras_por_cx": 1},
 }
 
-# Mesma paleta usada em cor_linha_status, só que em cartão em vez de célula de tabela —
-# usada nos resumos "pra enviar" das duas abas de conciliação.
+# Mesma paleta usada em cor_linha_status — aqui cada status vira a cor da barra
+# esquerda do card e do ícone, no estilo dos cards de turno do app de Pátio.
 CORES_RESUMO = {
-    "verde": ("#EAF3DE", "#173404"),
-    "vermelho": ("#FCEBEB", "#501313"),
-    "amarelo": ("#FFF4D4", "#5A4000"),
-    "azul": ("#CCE5FF", "#004085"),
-    "cinza": ("#E9ECEF", "#495057"),
+    "verde": "#2E7D32",
+    "vermelho": "#C62828",
+    "amarelo": "#EF6C00",
+    "azul": "#1565C0",
+    "cinza": "#616161",
+}
+ICONES_RESUMO = {
+    "verde": "✅",
+    "vermelho": "❌",
+    "amarelo": "⚠️",
+    "azul": "🔎",
+    "cinza": "⏳",
 }
 
 
 def renderizar_cards_resumo(itens: list[tuple[str, int, str]] | list[tuple[str, int, str, list[str] | None]]) -> None:
     """itens: lista de (rotulo, valor, cor) ou (rotulo, valor, cor, detalhes) — cor é uma
     chave de CORES_RESUMO. detalhes (opcional) é uma lista de linhas curtas mostradas
-    dentro do card quando valor > 0 (ex: qual mapa/item está causando aquele número)."""
+    dentro do card quando valor > 0 (ex: qual mapa/item está causando aquele número).
+    Visual no estilo dos cards de turno do app de Pátio: fundo branco, barra colorida
+    na esquerda, ícone + rótulo em cima, número grande, itens abaixo com divisor fino."""
     colunas = st.columns(len(itens))
     for col, item in zip(colunas, itens):
         rotulo, valor, cor = item[0], item[1], item[2]
         detalhes = item[3] if len(item) > 3 else None
-        bg, fg = CORES_RESUMO[cor]
+        cor_hex = CORES_RESUMO[cor]
+        icone = ICONES_RESUMO.get(cor, "•")
         linhas_html = ""
         if detalhes:
-            itens_html = "".join(f'<div style="margin-top:3px;">{d}</div>' for d in detalhes)
-            linhas_html = f'<div style="margin-top:6px; padding-top:6px; border-top:1px solid {fg}33; font-size:11px; text-align:left;">{itens_html}</div>'
+            linhas_html = "".join(
+                f'<div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; '
+                f'border-top:1px solid #f0f2f6; font-size:12.5px; color:#444;">'
+                f'<span>{d}</span></div>'
+                for d in detalhes
+            )
         html_card = (
-            f'<div style="background-color:{bg}; border-radius:10px; padding:14px 12px; text-align:center;">'
-            f'<div style="font-size:13px; color:{fg}; opacity:0.85; margin-bottom:2px;">{rotulo}</div>'
-            f'<div style="font-size:26px; font-weight:700; color:{fg}; line-height:1.2;">{valor}</div>'
+            f'<div style="background-color:white; border-left:6px solid {cor_hex}; border-radius:8px; '
+            f'padding:15px 20px; margin-bottom:15px; box-shadow:0 4px 6px rgba(0,0,0,0.05); '
+            f'border-top:1px solid #f0f2f6; border-right:1px solid #f0f2f6; border-bottom:1px solid #f0f2f6;">'
+            f'<div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">'
+            f'<span style="font-size:1.1em;">{icone}</span>'
+            f'<span style="font-size:12px; color:#666; font-weight:600; text-transform:uppercase; letter-spacing:0.5px;">{rotulo}</span>'
+            f'</div>'
+            f'<div style="font-size:26px; font-weight:bold; color:#111;">{valor}</div>'
             f'{linhas_html}'
             f'</div>'
         )
