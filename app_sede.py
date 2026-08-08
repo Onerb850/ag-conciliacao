@@ -35,6 +35,30 @@ REGRAS_VAZIO = {
     "1L": {"garrafas_por_cx": 12, "garrafeiras_por_cx": 1},
 }
 
+# Mesma paleta usada em cor_linha_status, só que em cartão em vez de célula de tabela —
+# usada nos resumos "pra enviar" das duas abas de conciliação.
+CORES_RESUMO = {
+    "verde": ("#EAF3DE", "#173404"),
+    "vermelho": ("#FCEBEB", "#501313"),
+    "amarelo": ("#FFF4D4", "#5A4000"),
+    "azul": ("#CCE5FF", "#004085"),
+    "cinza": ("#E9ECEF", "#495057"),
+}
+
+
+def renderizar_cards_resumo(itens: list[tuple[str, int, str]]) -> None:
+    """itens: lista de (rotulo, valor, cor) — cor é uma chave de CORES_RESUMO."""
+    colunas = st.columns(len(itens))
+    for col, (rotulo, valor, cor) in zip(colunas, itens):
+        bg, fg = CORES_RESUMO[cor]
+        col.markdown(
+            f"""<div style="background-color:{bg}; border-radius:10px; padding:14px 12px; text-align:center;">
+                <div style="font-size:13px; color:{fg}; opacity:0.85; margin-bottom:2px;">{rotulo}</div>
+                <div style="font-size:26px; font-weight:700; color:{fg}; line-height:1.2;">{valor}</div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+
 with st.sidebar:
     st.caption(f"Fonte: {ARQUIVO_MAPAS_AG.name} (atualiza sozinho a cada 5 min)")
     if st.button("🔄 Recarregar tela", width="stretch"):
@@ -375,19 +399,18 @@ with aba_conciliacao:
         st.caption(f"{qtd_mapas} mapa(s) conferido(s) nesse recorte.")
 
         pas_no_resumo = sorted(df_display["PA"].unique().tolist())
-        if pas_no_resumo:
-            colunas_pa_resumo = st.columns(len(pas_no_resumo))
-            for col_pa_resumo, pa_nome in zip(colunas_pa_resumo, pas_no_resumo):
-                df_pa_atual = df_display[df_display["PA"] == pa_nome]
-                with col_pa_resumo:
-                    st.markdown(f"**{pa_nome}**")
-                    bateu_pa = int((df_pa_atual["Status"] == "✅ Bateu").sum())
-                    faltou_pa = int((df_pa_atual["Status"] == "❌ Faltou AG").sum())
-                    sobrou_pa = int((df_pa_atual["Status"] == "⚠️ Sobrou AG").sum())
-                    sub_c1, sub_c2, sub_c3 = st.columns(3)
-                    sub_c1.metric("✅", bateu_pa)
-                    sub_c2.metric("❌", faltou_pa)
-                    sub_c3.metric("⚠️", sobrou_pa)
+        for pa_nome in pas_no_resumo:
+            df_pa_atual = df_display[df_display["PA"] == pa_nome]
+            st.markdown(f"**{pa_nome}**")
+            bateu_pa = int((df_pa_atual["Status"] == "✅ Bateu").sum())
+            faltou_pa = int((df_pa_atual["Status"] == "❌ Faltou AG").sum())
+            sobrou_pa = int((df_pa_atual["Status"] == "⚠️ Sobrou AG").sum())
+            renderizar_cards_resumo([
+                ("Bateram", bateu_pa, "verde"),
+                ("Faltou", faltou_pa, "vermelho"),
+                ("Sobrou", sobrou_pa, "amarelo"),
+            ])
+            st.write("")
 
         itens_problema = df_display[df_display["Status"] != "✅ Bateu"]
         if itens_problema.empty:
@@ -522,12 +545,13 @@ with aba_conciliacao_sede:
         sem_saida_sede = int((df_concil_sede["Status"] == "🔎 Sem Saída").sum())
         aguardando_sede = int((df_concil_sede["Status"] == "⏳ Aguardando Retorno").sum())
 
-        col_rs1, col_rs2, col_rs3, col_rs4, col_rs5 = st.columns(5)
-        col_rs1.metric("✅ Bateram", bateu_sede)
-        col_rs2.metric("❌ Faltou", faltou_sede)
-        col_rs3.metric("⚠️ Sobrou", sobrou_sede)
-        col_rs4.metric("🔎 Sem Saída", sem_saida_sede)
-        col_rs5.metric("⏳ Aguardando", aguardando_sede)
+        renderizar_cards_resumo([
+            ("Bateram", bateu_sede, "verde"),
+            ("Faltou", faltou_sede, "vermelho"),
+            ("Sobrou", sobrou_sede, "amarelo"),
+            ("Sem Saída", sem_saida_sede, "azul"),
+            ("Aguardando", aguardando_sede, "cinza"),
+        ])
 
         itens_problema_sede = df_concil_sede[df_concil_sede["Status"] != "✅ Bateu"]
         if itens_problema_sede.empty:
