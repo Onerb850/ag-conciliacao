@@ -59,6 +59,21 @@ def renderizar_cards_resumo(itens: list[tuple[str, int, str]]) -> None:
             unsafe_allow_html=True,
         )
 
+
+def status_por_mapa(df: pd.DataFrame, ordem_prioridade: list[str]) -> pd.Series:
+    """Resume os status de TODAS as linhas (famílias/itens) de cada mapa num status só
+    por mapa — usando a ordem de prioridade dada (primeiro item = pior/mais urgente,
+    último = status "bom"). Um mapa com qualquer linha "Faltou" conta como Faltou,
+    mesmo que as outras famílias tenham batido — só conta como Bateu se TODAS baterem."""
+    def _pior(serie_status: pd.Series) -> str:
+        valores = set(serie_status)
+        for status in ordem_prioridade:
+            if status in valores:
+                return status
+        return ordem_prioridade[-1]
+    return df.groupby("Mapa")["Status"].apply(_pior)
+
+
 with st.sidebar:
     st.caption(f"Fonte: {ARQUIVO_MAPAS_AG.name} (atualiza sozinho a cada 5 min)")
     if st.button("🔄 Recarregar tela", width="stretch"):
@@ -386,8 +401,10 @@ with aba_conciliacao:
         df_display = df_display.sort_values(by=["Mapa", "Familia"])
 
         # =================================================================
-        # RESUMO PRA ENVIAR (WhatsApp/print) — números por PA + só o que
-        # tem problema, pra caber numa tela só e ser fácil de printar.
+        # RESUMO PRA ENVIAR (WhatsApp/print) — números por PA, contando
+        # MAPAS (não itens/famílias). Um mapa só conta como "Bateu" se TODAS
+        # as suas famílias bateram; se qualquer uma faltou, o mapa inteiro
+        # conta como "Faltou" (Faltou > Sobrou > Bateu em prioridade).
         # =================================================================
         st.divider()
         titulo_resumo = "📋 Resumo pra enviar"
@@ -399,15 +416,17 @@ with aba_conciliacao:
         st.caption(f"{qtd_mapas} mapa(s) conferido(s) nesse recorte.")
 
         pas_no_resumo = sorted(df_display["PA"].unique().tolist())
+        ORDEM_STATUS_PA = ["❌ Faltou AG", "⚠️ Sobrou AG", "✅ Bateu"]
         for pa_nome in pas_no_resumo:
             df_pa_atual = df_display[df_display["PA"] == pa_nome]
             st.markdown(
                 f"""<div style="display:inline-block; background-color:#e2e6ea; color:#212529; font-weight:700; font-size:15px; padding:6px 16px; border-radius:20px; margin-bottom:10px;">📍 {pa_nome}</div>""",
                 unsafe_allow_html=True,
             )
-            bateu_pa = int((df_pa_atual["Status"] == "✅ Bateu").sum())
-            faltou_pa = int((df_pa_atual["Status"] == "❌ Faltou AG").sum())
-            sobrou_pa = int((df_pa_atual["Status"] == "⚠️ Sobrou AG").sum())
+            status_mapas_pa = status_por_mapa(df_pa_atual, ORDEM_STATUS_PA)
+            bateu_pa = int((status_mapas_pa == "✅ Bateu").sum())
+            faltou_pa = int((status_mapas_pa == "❌ Faltou AG").sum())
+            sobrou_pa = int((status_mapas_pa == "⚠️ Sobrou AG").sum())
             renderizar_cards_resumo([
                 ("Bateram", bateu_pa, "verde"),
                 ("Faltou", faltou_pa, "vermelho"),
@@ -535,6 +554,9 @@ with aba_conciliacao_sede:
         # =================================================================
         # RESUMO PRA ENVIAR (WhatsApp/print) — usa df_concil_sede inteiro
         # (não os filtros da tela), pra sempre dar o total real do recorte.
+        # Conta MAPAS (não itens): cada mapa recebe o pior status entre
+        # todos os seus itens (Faltou > Sobrou > Sem Saída > Aguardando >
+        # Bateu), e só conta como Bateu se TODOS os itens baterem.
         # =================================================================
         st.divider()
         st.markdown("### 📋 Resumo pra enviar")
@@ -542,11 +564,17 @@ with aba_conciliacao_sede:
         qtd_mapas_sede = df_concil_sede["Mapa"].nunique()
         st.caption(f"{qtd_mapas_sede} mapa(s) nesse recorte.")
 
-        bateu_sede = int((df_concil_sede["Status"] == "✅ Bateu").sum())
-        faltou_sede = int((df_concil_sede["Status"] == "❌ Faltou (não retornou)").sum())
-        sobrou_sede = int((df_concil_sede["Status"] == "⚠️ Sobrou no Retorno").sum())
-        sem_saida_sede = int((df_concil_sede["Status"] == "🔎 Sem Saída").sum())
-        aguardando_sede = int((df_concil_sede["Status"] == "⏳ Aguardando Retorno").sum())
+        ORDEM_STATUS_SEDE = [
+            "❌ Faltou (não retornou)", "⚠️ Sobrou no Retorno",
+            "🔎 Sem Saída", "⏳ Aguardando Retorno", "✅ Bateu",
+        ]
+        status_mapas_sede = status_por_mapa(df_concil_sede, ORDEM_STATUS_SEDE)
+
+        bateu_sede = int((status_mapas_sede == "✅ Bateu").sum())
+        faltou_sede = int((status_mapas_sede == "❌ Faltou (não retornou)").sum())
+        sobrou_sede = int((status_mapas_sede == "⚠️ Sobrou no Retorno").sum())
+        sem_saida_sede = int((status_mapas_sede == "🔎 Sem Saída").sum())
+        aguardando_sede = int((status_mapas_sede == "⏳ Aguardando Retorno").sum())
 
         renderizar_cards_resumo([
             ("Bateram", bateu_sede, "verde"),
