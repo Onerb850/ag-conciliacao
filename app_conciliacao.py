@@ -258,7 +258,11 @@ with aba_conciliacao:
         # um rótulo genérico quando o conferente não digitou retorno pra ela.
         mapa_pa_lookup = hist_vazio_pa.groupby("Mapa")["PA"].first().to_dict()
 
-        vazio_agg = hist_vazio_pa.groupby(["Mapa", "PA", "Familia"])["Qtd_Retorno_Unidades"].sum().reset_index()
+        colunas_agrupamento_vazio = ["Mapa", "PA", "Familia"]
+        tem_data_vazio_pa = "Data" in hist_vazio_pa.columns
+        if tem_data_vazio_pa:
+            colunas_agrupamento_vazio.append("Data")
+        vazio_agg = hist_vazio_pa.groupby(colunas_agrupamento_vazio)["Qtd_Retorno_Unidades"].sum().reset_index()
 
         # 3. CRUZAMENTO (MERGE) E CÁLCULO FÍSICO
         df_concil = pd.merge(venda_agg, vazio_agg, on=["Mapa", "Familia"], how="outer").fillna(0)
@@ -267,6 +271,8 @@ with aba_conciliacao:
             lambda r: mapa_pa_lookup.get(r["Mapa"], "Aguardando Retorno") if r["PA"] == 0 else r["PA"],
             axis=1,
         )
+        if tem_data_vazio_pa:
+            df_concil["Data"] = df_concil["Data"].replace(0, "-")
 
         df_concil["Fator"] = df_concil["Familia"].apply(fator_conversao_caixas)
 
@@ -278,22 +284,26 @@ with aba_conciliacao:
 
         df_concil["Diferença_Unidades"] = df_concil["Qtd_Retorno_Unidades"] - df_concil["Qtd_Saida_Unidades"]
 
+        # Só garrafa de verdade converte pra caixa+garrafa solta — qualquer outra coisa
+        # (Pallet, Chapatex, Barril) é sempre unidade, sem "gf" nenhum.
+        FAMILIAS_GARRAFA = ("300ml", "600ml", "Verde 600", "1L")
+
         # 4. CRIAÇÃO DOS TEXTOS FORMATADOS
         def formata_cx_un(cx, un, fam):
-            if "Barril" in fam:
-                return f"{int(un)} un" if un > 0 else "0"
-            else:
-                if cx == 0 and un == 0: return "0"
-                res = []
-                if cx > 0: res.append(f"{int(cx)} cx")
-                if un > 0: res.append(f"{int(un)} gf")
-                return " + ".join(res)
+            if fam not in FAMILIAS_GARRAFA:
+                total = int(cx) + int(un)
+                return f"{total} un" if total > 0 else "0"
+            if cx == 0 and un == 0: return "0"
+            res = []
+            if cx > 0: res.append(f"{int(cx)} cx")
+            if un > 0: res.append(f"{int(un)} gf")
+            return " + ".join(res)
 
         df_concil["Saída"] = df_concil.apply(lambda r: formata_cx_un(r["Caixas_Saida"], r["Soltas_Saida"], r["Familia"]), axis=1)
         df_concil["Retorno"] = df_concil.apply(lambda r: formata_cx_un(r["Caixas_Retorno"], r["Soltas_Retorno"], r["Familia"]), axis=1)
 
         def formata_dif(dif, fam):
-            item = "un" if "Barril" in fam else "gf"
+            item = "gf" if fam in FAMILIAS_GARRAFA else "un"
             if dif == 0: return "0"
             if dif > 0: return f"+{int(dif)} {item}"
             return f"{int(dif)} {item}"
@@ -316,7 +326,17 @@ with aba_conciliacao:
         df_concil["Status"] = df_concil.apply(status_conciliacao, axis=1)
 
         # 5. FILTROS E EXIBIÇÃO
-        col_filtro1, col_filtro2, col_filtro3 = st.columns([1, 1, 2])
+        if tem_data_vazio_pa:
+            col_filtro0, col_filtro1, col_filtro2, col_filtro3 = st.columns([1, 1, 1, 2])
+            datas_disponiveis_pa = sorted(
+                {d for d in df_concil["Data"].unique() if d != "-"},
+                key=lambda d: pd.to_datetime(d, dayfirst=True, errors="coerce"),
+                reverse=True,
+            )
+            data_filter = col_filtro0.selectbox("Filtrar por Data:", ["Todas"] + datas_disponiveis_pa)
+        else:
+            col_filtro1, col_filtro2, col_filtro3 = st.columns([1, 1, 2])
+            data_filter = "Todas"
 
         lista_pas = ["Todos"] + sorted(df_concil["PA"].unique().tolist())
         pa_filter = col_filtro1.selectbox("Filtrar por PA:", lista_pas)
@@ -324,6 +344,9 @@ with aba_conciliacao:
         mapa_search = col_filtro3.text_input("🔍 Pesquisar Mapa Específico (opcional):", "")
 
         df_display = df_concil.copy()
+
+        if tem_data_vazio_pa and data_filter != "Todas":
+            df_display = df_display[df_display["Data"] == data_filter]
 
         if pa_filter != "Todos":
             df_display = df_display[df_display["PA"] == pa_filter]
@@ -334,7 +357,8 @@ with aba_conciliacao:
         if mapa_search.strip() != "":
             df_display = df_display[df_display["Mapa"].str.contains(limpa_mapa(mapa_search))]
 
-        df_display = df_display[["Mapa", "PA", "Familia", "Saída", "Retorno", "Diferença", "Status"]]
+        colunas_exibir_pa = ["Mapa"] + (["Data"] if tem_data_vazio_pa else []) + ["PA", "Familia", "Saída", "Retorno", "Diferença", "Status"]
+        df_display = df_display[colunas_exibir_pa]
         df_display = df_display.sort_values(by=["Mapa", "Familia"])
 
         st.dataframe(
