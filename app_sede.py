@@ -401,7 +401,10 @@ with aba_conciliacao:
         pas_no_resumo = sorted(df_display["PA"].unique().tolist())
         for pa_nome in pas_no_resumo:
             df_pa_atual = df_display[df_display["PA"] == pa_nome]
-            st.markdown(f"**{pa_nome}**")
+            st.markdown(
+                f"""<div style="display:inline-block; background-color:#e2e6ea; color:#212529; font-weight:700; font-size:15px; padding:6px 16px; border-radius:20px; margin-bottom:10px;">📍 {pa_nome}</div>""",
+                unsafe_allow_html=True,
+            )
             bateu_pa = int((df_pa_atual["Status"] == "✅ Bateu").sum())
             faltou_pa = int((df_pa_atual["Status"] == "❌ Faltou AG").sum())
             sobrou_pa = int((df_pa_atual["Status"] == "⚠️ Sobrou AG").sum())
