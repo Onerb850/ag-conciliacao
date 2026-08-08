@@ -46,15 +46,24 @@ CORES_RESUMO = {
 }
 
 
-def renderizar_cards_resumo(itens: list[tuple[str, int, str]]) -> None:
-    """itens: lista de (rotulo, valor, cor) — cor é uma chave de CORES_RESUMO."""
+def renderizar_cards_resumo(itens: list[tuple[str, int, str]] | list[tuple[str, int, str, list[str] | None]]) -> None:
+    """itens: lista de (rotulo, valor, cor) ou (rotulo, valor, cor, detalhes) — cor é uma
+    chave de CORES_RESUMO. detalhes (opcional) é uma lista de linhas curtas mostradas
+    dentro do card quando valor > 0 (ex: qual mapa/item está causando aquele número)."""
     colunas = st.columns(len(itens))
-    for col, (rotulo, valor, cor) in zip(colunas, itens):
+    for col, item in zip(colunas, itens):
+        rotulo, valor, cor = item[0], item[1], item[2]
+        detalhes = item[3] if len(item) > 3 else None
         bg, fg = CORES_RESUMO[cor]
+        linhas_html = ""
+        if detalhes:
+            itens_html = "".join(f'<div style="margin-top:3px;">{d}</div>' for d in detalhes)
+            linhas_html = f'<div style="margin-top:6px; padding-top:6px; border-top:1px solid {fg}33; font-size:11px; text-align:left;">{itens_html}</div>'
         col.markdown(
             f"""<div style="background-color:{bg}; border-radius:10px; padding:14px 12px; text-align:center;">
                 <div style="font-size:13px; color:{fg}; opacity:0.85; margin-bottom:2px;">{rotulo}</div>
                 <div style="font-size:26px; font-weight:700; color:{fg}; line-height:1.2;">{valor}</div>
+                {linhas_html}
             </div>""",
             unsafe_allow_html=True,
         )
@@ -486,10 +495,23 @@ with aba_conciliacao:
             bateu_pa = int((status_mapas_pa == "✅ Bateu").sum())
             faltou_pa = int((status_mapas_pa == "❌ Faltou AG").sum())
             sobrou_pa = int((status_mapas_pa == "⚠️ Sobrou AG").sum())
+
+            # Linhas de detalhe (Mapa · Família · Diferença) mostradas dentro do card,
+            # pra saber de cara QUAL item está causando a diferença sem abrir a tabela.
+            itens_visiveis_pa = df_pa_atual[df_pa_atual["Status_Resumo"] != "✅ Bateu"]
+            detalhes_faltou = [
+                f"Mapa {r['Mapa']} · {r['Familia']} · {r['Diferença']}"
+                for _, r in itens_visiveis_pa[itens_visiveis_pa["Status"] == "❌ Faltou AG"].iterrows()
+            ]
+            detalhes_sobrou = [
+                f"Mapa {r['Mapa']} · {r['Familia']} · {r['Diferença']}"
+                for _, r in itens_visiveis_pa[itens_visiveis_pa["Status"] == "⚠️ Sobrou AG"].iterrows()
+            ]
+
             renderizar_cards_resumo([
-                ("Bateram", bateu_pa, "verde"),
-                ("Faltou", faltou_pa, "vermelho"),
-                ("Sobrou", sobrou_pa, "amarelo"),
+                ("Bateram", bateu_pa, "verde", None),
+                ("Faltou", faltou_pa, "vermelho", detalhes_faltou),
+                ("Sobrou", sobrou_pa, "amarelo", detalhes_sobrou),
             ])
             st.write("")
 
