@@ -361,10 +361,50 @@ with aba_conciliacao:
         df_display = df_display[colunas_exibir_pa]
         df_display = df_display.sort_values(by=["Mapa", "Familia"])
 
-        st.dataframe(
-            df_display.style.map(cor_linha_status, subset=["Status"]),
-            use_container_width=True, hide_index=True
-        )
+        # =================================================================
+        # RESUMO PRA ENVIAR (WhatsApp/print) — números por PA + só o que
+        # tem problema, pra caber numa tela só e ser fácil de printar.
+        # =================================================================
+        st.divider()
+        titulo_resumo = "📋 Resumo pra enviar"
+        if tem_data_vazio_pa and data_filter != "Todas":
+            titulo_resumo += f" — {data_filter}"
+        st.markdown(f"### {titulo_resumo}")
+
+        qtd_mapas = df_display["Mapa"].nunique()
+        st.caption(f"{qtd_mapas} mapa(s) conferido(s) nesse recorte.")
+
+        pas_no_resumo = sorted(df_display["PA"].unique().tolist())
+        if pas_no_resumo:
+            colunas_pa_resumo = st.columns(len(pas_no_resumo))
+            for col_pa_resumo, pa_nome in zip(colunas_pa_resumo, pas_no_resumo):
+                df_pa_atual = df_display[df_display["PA"] == pa_nome]
+                with col_pa_resumo:
+                    st.markdown(f"**{pa_nome}**")
+                    bateu_pa = int((df_pa_atual["Status"] == "✅ Bateu").sum())
+                    faltou_pa = int((df_pa_atual["Status"] == "❌ Faltou AG").sum())
+                    sobrou_pa = int((df_pa_atual["Status"] == "⚠️ Sobrou AG").sum())
+                    sub_c1, sub_c2, sub_c3 = st.columns(3)
+                    sub_c1.metric("✅", bateu_pa)
+                    sub_c2.metric("❌", faltou_pa)
+                    sub_c3.metric("⚠️", sobrou_pa)
+
+        itens_problema = df_display[df_display["Status"] != "✅ Bateu"]
+        if itens_problema.empty:
+            st.success("🎉 Nenhuma diferença — tudo bateu certinho!")
+        else:
+            st.markdown("**Itens com diferença:**")
+            colunas_resumo_prob = ["Mapa"] + (["Data"] if tem_data_vazio_pa else []) + ["PA", "Familia", "Diferença", "Status"]
+            st.dataframe(
+                itens_problema[colunas_resumo_prob].style.map(cor_linha_status, subset=["Status"]),
+                use_container_width=True, hide_index=True,
+            )
+
+        with st.expander("📄 Ver tabela completa (todos os itens, inclusive os que bateram)"):
+            st.dataframe(
+                df_display.style.map(cor_linha_status, subset=["Status"]),
+                use_container_width=True, hide_index=True
+            )
 
         st.caption("Nota 1: Mapas com status 'Faltou AG' saíram no Previsto e não tiveram (ou tiveram menos) retorno digitado na aba 'Vazio por PA'.")
         st.caption("Nota 2: Mapas com status 'Sobrou AG' foram conferidos no PA com quantidade maior do que o Previsto (incluindo casos em que nada saiu, mas algo foi digitado). A diferença é sempre exibida na menor unidade física (garrafas ou unidades soltas).")
@@ -466,10 +506,44 @@ with aba_conciliacao_sede:
         colunas_exibir_sede = ["Mapa", "Data", "AG", "Saída (Total)", "Retorno (Total)", "Diferença", "Status"]
         df_display_sede = df_display_sede[colunas_exibir_sede].sort_values(by=["Mapa", "AG"])
 
-        st.dataframe(
-            df_display_sede.style.map(cor_linha_status, subset=["Status"]),
-            use_container_width=True, hide_index=True,
-        )
+        # =================================================================
+        # RESUMO PRA ENVIAR (WhatsApp/print) — usa df_concil_sede inteiro
+        # (não os filtros da tela), pra sempre dar o total real do recorte.
+        # =================================================================
+        st.divider()
+        st.markdown("### 📋 Resumo pra enviar")
+
+        qtd_mapas_sede = df_concil_sede["Mapa"].nunique()
+        st.caption(f"{qtd_mapas_sede} mapa(s) nesse recorte.")
+
+        bateu_sede = int((df_concil_sede["Status"] == "✅ Bateu").sum())
+        faltou_sede = int((df_concil_sede["Status"] == "❌ Faltou (não retornou)").sum())
+        sobrou_sede = int((df_concil_sede["Status"] == "⚠️ Sobrou no Retorno").sum())
+        sem_saida_sede = int((df_concil_sede["Status"] == "🔎 Sem Saída").sum())
+        aguardando_sede = int((df_concil_sede["Status"] == "⏳ Aguardando Retorno").sum())
+
+        col_rs1, col_rs2, col_rs3, col_rs4, col_rs5 = st.columns(5)
+        col_rs1.metric("✅ Bateram", bateu_sede)
+        col_rs2.metric("❌ Faltou", faltou_sede)
+        col_rs3.metric("⚠️ Sobrou", sobrou_sede)
+        col_rs4.metric("🔎 Sem Saída", sem_saida_sede)
+        col_rs5.metric("⏳ Aguardando", aguardando_sede)
+
+        itens_problema_sede = df_concil_sede[df_concil_sede["Status"] != "✅ Bateu"]
+        if itens_problema_sede.empty:
+            st.success("🎉 Nenhuma diferença — tudo bateu certinho!")
+        else:
+            st.markdown("**Itens com diferença:**")
+            st.dataframe(
+                itens_problema_sede[["Mapa", "Data", "AG", "Diferença", "Status"]].style.map(cor_linha_status, subset=["Status"]),
+                use_container_width=True, hide_index=True,
+            )
+
+        with st.expander("📄 Ver tabela completa (respeitando os filtros da tela)"):
+            st.dataframe(
+                df_display_sede.style.map(cor_linha_status, subset=["Status"]),
+                use_container_width=True, hide_index=True,
+            )
 
         st.caption("Nota: Saída/Retorno somam Vazio + Comodato + Devolução + Troca + Consignação + Rec. Consignação. Pra ver em qual espécie está a diferença, use a aba 'Outras Categorias' filtrando pelo mesmo mapa.")
 
