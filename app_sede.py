@@ -59,14 +59,14 @@ def renderizar_cards_resumo(itens: list[tuple[str, int, str]] | list[tuple[str, 
         if detalhes:
             itens_html = "".join(f'<div style="margin-top:3px;">{d}</div>' for d in detalhes)
             linhas_html = f'<div style="margin-top:6px; padding-top:6px; border-top:1px solid {fg}33; font-size:11px; text-align:left;">{itens_html}</div>'
-        col.markdown(
-            f"""<div style="background-color:{bg}; border-radius:10px; padding:14px 12px; text-align:center;">
-                <div style="font-size:13px; color:{fg}; opacity:0.85; margin-bottom:2px;">{rotulo}</div>
-                <div style="font-size:26px; font-weight:700; color:{fg}; line-height:1.2;">{valor}</div>
-                {linhas_html}
-            </div>""",
-            unsafe_allow_html=True,
+        html_card = (
+            f'<div style="background-color:{bg}; border-radius:10px; padding:14px 12px; text-align:center;">'
+            f'<div style="font-size:13px; color:{fg}; opacity:0.85; margin-bottom:2px;">{rotulo}</div>'
+            f'<div style="font-size:26px; font-weight:700; color:{fg}; line-height:1.2;">{valor}</div>'
+            f'{linhas_html}'
+            f'</div>'
         )
+        col.markdown(html_card, unsafe_allow_html=True)
 
 
 def status_por_mapa(df: pd.DataFrame, ordem_prioridade: list[str]) -> pd.Series:
