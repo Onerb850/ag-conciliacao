@@ -257,19 +257,30 @@ with aba_vazio_pa:
             if df_mapa_editar.empty:
                 st.info("Nenhum item encontrado pra esse mapa/data.")
             else:
-                familias_disponiveis = sorted(df_mapa_editar["Familia"].unique())
-                edit_familia = st.selectbox("Item (Família) para editar", familias_disponiveis, key="edit_familia_pa")
+                # Todas as famílias possíveis — não só as que já têm registro pra esse mapa,
+                # assim dá pra ADICIONAR um item que nunca foi digitado (ex: Chapatex),
+                # não só editar o que já existe.
+                TODAS_FAMILIAS = list(REGRAS_VAZIO.keys()) + ["Chapatex", "Pallet PBR1", "Pallet PBR2", "Barril 30L", "Barril 50L"]
+                familias_ja_digitadas = set(df_mapa_editar["Familia"].unique())
+                familias_disponiveis = sorted(TODAS_FAMILIAS, key=lambda f: (f not in familias_ja_digitadas, f))
+                edit_familia = st.selectbox("Item (Família) para editar ou adicionar", familias_disponiveis, key="edit_familia_pa")
 
-                linha_atual = df_mapa_editar[df_mapa_editar["Familia"] == edit_familia].iloc[0]
-                pa_atual = linha_atual["PA"]
-
-                st.caption(f"Editando: Mapa {edit_mapa} · {pa_atual} · {edit_data} · {edit_familia}")
+                linhas_familia = df_mapa_editar[df_mapa_editar["Familia"] == edit_familia]
+                pa_padrao = df_mapa_editar["PA"].iloc[0]
+                if not linhas_familia.empty:
+                    linha_atual = linhas_familia.iloc[0]
+                    pa_atual = linha_atual["PA"]
+                    st.caption(f"Editando: Mapa {edit_mapa} · {pa_atual} · {edit_data} · {edit_familia}")
+                else:
+                    linha_atual = {}
+                    pa_atual = pa_padrao
+                    st.caption(f"Adicionando item novo: Mapa {edit_mapa} · {pa_atual} · {edit_data} · {edit_familia} (ainda não digitado)")
 
                 ce1, ce2, ce3, ce4 = st.columns(4)
-                novo_caixas = ce1.number_input("Caixas", min_value=0, step=1, value=int(linha_atual.get("Caixas", 0)), key="edit_caixas")
-                novo_garrafas = ce2.number_input("Garrafas", min_value=0, step=1, value=int(linha_atual.get("Garrafas", 0)), key="edit_garrafas")
-                novo_garrafeiras = ce3.number_input("Garrafeiras", min_value=0, step=1, value=int(linha_atual.get("Garrafeiras", 0)), key="edit_garrafeiras")
-                novo_unidades = ce4.number_input("Unidades", min_value=0, step=1, value=int(linha_atual.get("Unidades", 0)), key="edit_unidades")
+                novo_caixas = ce1.number_input("Caixas", min_value=0, step=1, value=int(linha_atual.get("Caixas", 0)) if isinstance(linha_atual, pd.Series) else 0, key="edit_caixas")
+                novo_garrafas = ce2.number_input("Garrafas", min_value=0, step=1, value=int(linha_atual.get("Garrafas", 0)) if isinstance(linha_atual, pd.Series) else 0, key="edit_garrafas")
+                novo_garrafeiras = ce3.number_input("Garrafeiras", min_value=0, step=1, value=int(linha_atual.get("Garrafeiras", 0)) if isinstance(linha_atual, pd.Series) else 0, key="edit_garrafeiras")
+                novo_unidades = ce4.number_input("Unidades", min_value=0, step=1, value=int(linha_atual.get("Unidades", 0)) if isinstance(linha_atual, pd.Series) else 0, key="edit_unidades")
 
                 if st.button("💾 Salvar edição", type="primary", key="salvar_edicao_pa"):
                     nova_linha = pd.DataFrame([{
