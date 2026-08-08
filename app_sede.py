@@ -442,7 +442,7 @@ with aba_conciliacao:
                 key=lambda d: pd.to_datetime(d, dayfirst=True, errors="coerce"),
                 reverse=True,
             )
-            data_filter = col_filtro0.selectbox("Filtrar por Data:", ["Todas"] + datas_disponiveis_pa)
+            data_filter = col_filtro0.selectbox("Filtrar por Data:", ["Todas"] + datas_disponiveis_pa, key="filtro_data_pa")
         else:
             col_filtro1, col_filtro2, col_filtro3 = st.columns([1, 1, 2])
             data_filter = "Todas"
