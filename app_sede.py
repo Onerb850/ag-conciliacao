@@ -259,7 +259,7 @@ with st.sidebar:
     if st.button("🔄 Recarregar tela", width="stretch"):
         st.rerun()
     intervalo_datas = st.date_input(
-        "Considerar movimentações no período:",
+        "Considerar mapas do CONC.csv no período:",
         value=(date(2026, 8, 1), date.today()),
     )
     # date_input com range só retorna as duas datas depois que o usuário escolhe as duas
@@ -373,6 +373,31 @@ def buscar_mapas_por_data_pa(data_alvo, pa_alvo: str) -> list[str]:
     return sorted(sub["Mapa"].dropna().unique().tolist(), key=lambda m: int(m) if str(m).isdigit() else 0)
 
 
+# =========================================================================
+# CONC.csv é a fonte única de verdade de QUAIS MAPAS e QUAIS DATAS entram em
+# cada conciliação — o relatório 03.07.13 só é usado pra consultar valores por
+# número de mapa, nunca pra decidir se um mapa entra ou não. O filtro de
+# período da sidebar agora escopa o CONC.csv (não mais o relatório).
+# =========================================================================
+_PA_NORMALIZADO = {"TIANGUÁ": "Tianguá", "TIANGUA": "Tianguá", "GRANJA": "Granja", "SEDE": "Sede"}
+
+df_mapa_pa_periodo = df_mapa_pa
+if df_mapa_pa is not None and not df_mapa_pa.empty and "Data" in df_mapa_pa.columns:
+    _dt_conc = pd.to_datetime(df_mapa_pa["Data"], dayfirst=True, errors="coerce")
+    df_mapa_pa_periodo = df_mapa_pa[(_dt_conc >= pd.Timestamp(data_inicio)) & (_dt_conc <= pd.Timestamp(data_fim))]
+
+# {mapa_resolvido: "Tianguá"/"Granja"/"Sede"} — dita o roteamento entre as abas.
+MAPA_PA_CLASSIFICACAO: dict[str, str] = {}
+if df_mapa_pa_periodo is not None and not df_mapa_pa_periodo.empty and "PA" in df_mapa_pa_periodo.columns:
+    for _, _linha_conc in df_mapa_pa_periodo.iterrows():
+        _mapa_resolvido = resolver_mapa(_linha_conc["Mapa"])
+        _pa_bruto = str(_linha_conc["PA"]).strip().upper()
+        MAPA_PA_CLASSIFICACAO[_mapa_resolvido] = _PA_NORMALIZADO.get(_pa_bruto, _linha_conc["PA"])
+
+MAPAS_PA_CONC = {m for m, pa in MAPA_PA_CLASSIFICACAO.items() if pa in ("Tianguá", "Granja")}
+MAPAS_SEDE_CONC = {m for m, pa in MAPA_PA_CLASSIFICACAO.items() if pa == "Sede"}
+
+
 # --- 03.07.13: carrega e filtra pelo período escolhido, sem gravar nada no Drive ---
 df_mapas_ag = carregar(ARQUIVO_MAPAS_AG)
 if df_mapas_ag is not None:
@@ -396,15 +421,9 @@ if df_mapas_ag is not None:
         codigos_validos = set(df_de_material["Promax"].unique())
         df_mapas_ag = df_mapas_ag[df_mapas_ag["Material"].isin(codigos_validos)]
 
-    # Cópia SEM o filtro de período — usada só pra achar a Saída de um mapa específico
-    # na Conciliação Mapas PA (individual e lote). Ali o que importa é o NÚMERO do mapa
-    # digitado pelo conferente, não se a data do relatório cai dentro do período
-    # selecionado na sidebar (que é só um filtro de visualização pras outras abas).
-    df_mapas_ag_sem_filtro_data = df_mapas_ag.copy()
-
-    if "Data" in df_mapas_ag.columns:
-        _dt = pd.to_datetime(df_mapas_ag["Data"], dayfirst=True, errors="coerce")
-        df_mapas_ag = df_mapas_ag[(_dt >= pd.Timestamp(data_inicio)) & (_dt <= pd.Timestamp(data_fim))]
+    # O relatório 03.07.13 nunca é filtrado por período — o CONC.csv já dita quais
+    # mapas e datas entram em cada conciliação; aqui só se consulta por número de mapa.
+    df_mapas_ag_sem_filtro_data = df_mapas_ag
 else:
     df_mapas_ag_sem_filtro_data = None
 
@@ -412,10 +431,13 @@ _periodo_str = f"{data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/
 with st.sidebar:
     if df_mapas_ag is None:
         st.error(f"Não encontrei '{ARQUIVO_MAPAS_AG.name}' no Google Drive.")
-    elif df_mapas_ag.empty:
-        st.warning(f"'{ARQUIVO_MAPAS_AG.name}' carregado, mas nenhuma linha entre {_periodo_str}.")
+    elif df_mapa_pa is None:
+        st.error(f"Não encontrei '{ARQUIVO_MAPA_PA.name}' no Google Drive.")
     else:
-        st.success(f"{ARQUIVO_MAPAS_AG.name}: {len(df_mapas_ag)} linha(s) entre {_periodo_str}.")
+        st.success(
+            f"{ARQUIVO_MAPAS_AG.name}: {len(df_mapas_ag)} linha(s). "
+            f"CONC.csv: {len(MAPA_PA_CLASSIFICACAO)} mapa(s) no período ({_periodo_str})."
+        )
 
 
 def gerar_simulacao_perfeita(data_alvo) -> pd.DataFrame:
@@ -466,9 +488,9 @@ aba_vazio_pa, aba_conciliacao, aba_conciliacao_sede, aba_categorias_extra = st.t
     ["Vazio por PA", "Conciliação Mapas PA", "Conciliação Mapas Sede", "Outras Categorias"]
 )
 
-# Roteamento: um mapa só entra na Conciliação Mapas PA se foi digitado na aba 'Vazio por
-# PA' pelo conferente; todo o resto cai na 'Conciliação Mapas Sede'. Esse histórico
-# (VazioPA) é pequeno — só o que o conferente digitou — e continua sendo salvo normalmente.
+# Roteamento entre as abas agora vem do CONC.csv (MAPA_PA_CLASSIFICACAO), não mais de
+# "foi digitado ou não". MAPAS_INDIVIDUAIS/MAPAS_EM_LOTE continuam existindo só pra
+# saber o que já foi conferido (usado no cruzamento de Retorno), não pra roteamento.
 def mapas_da_lote(mapas_str: str) -> list[str]:
     """'257379;257386;257402' -> ['257379','257386','257402'] — ';' é o separador usado
     pra guardar o conjunto de mapas de uma conferência em lote numa única célula."""
@@ -491,12 +513,6 @@ if not _hist_lote_bruto.empty and "Mapas" in _hist_lote_bruto.columns:
     for _mapas_str in _hist_lote_bruto["Mapas"].unique():
         MAPAS_EM_LOTE.update(mapas_da_lote(_mapas_str))
 
-# Um mapa é "conferido no PA" se apareceu digitado individualmente OU dentro de um
-# lote — nos dois casos ele sai da Conciliação Mapas Sede. Inclui também a versão
-# resolvida (consolidada): se 257682 foi conferido mas o relatório só tem 257693, é
-# 257693 que precisa sair da Sede, senão ele apareceria duplicado nas duas telas.
-_mapas_conferidos_pa_bruto = MAPAS_INDIVIDUAIS | MAPAS_EM_LOTE
-MAPAS_COM_CONFERENCIA_PA = _mapas_conferidos_pa_bruto | set(resolver_mapas(_mapas_conferidos_pa_bruto))
 
 
 # =========================================================================
@@ -787,16 +803,15 @@ with aba_vazio_pa:
 # =========================================================================
 with aba_conciliacao:
     st.header("⚖️ Conciliação de Mapas PA (Saída vs. Retorno conferente)")
-    st.caption("Só mapas digitados na aba 'Vazio por PA'.")
+    st.caption("Mapas Tianguá/Granja do CONC.csv — aparecem mesmo sem conferência ainda.")
 
-    if df_mapas_ag_sem_filtro_data is None or df_mapas_ag_sem_filtro_data.empty or _hist_vazio_pa_bruto.empty:
-        st.info("⚠️ Aguardando dados. É necessário ter o relatório 03.07.13 carregado e algum retorno digitado na aba 'Vazio por PA' para fazer o cruzamento.")
+    if df_mapas_ag_sem_filtro_data is None or df_mapas_ag_sem_filtro_data.empty or not MAPAS_PA_CONC:
+        st.info("⚠️ Aguardando dados. É necessário ter o relatório 03.07.13 e o CONC.csv (com mapas Tianguá/Granja) carregados.")
     else:
         # 1. VENDA (SAÍDA) — classificada pelo Código do Material via De Material.xlsx.
-        # Usa df_mapas_ag_sem_filtro_data (relatório INTEIRO, sem o filtro de período da
-        # sidebar): aqui quem decide se um mapa entra é o número do mapa digitado pelo
-        # conferente, não se a data do relatório cai dentro do período selecionado —
-        # senão um mapa de fora do período apareceria com Saída = 0 por engano.
+        # Usa df_mapas_ag_sem_filtro_data (relatório sem filtro de data — só o número do
+        # mapa importa) e MAPAS_PA_CONC (o CONC.csv é quem dita quais mapas entram aqui,
+        # independente de já terem sido conferidos ou não).
         # Só entram garrafa/barril soltos (não garrafeira), igual ao Retorno digitado
         # manualmente, que também só conta Garrafas+Unidades (nunca Garrafeiras).
         familia_tipo_venda = df_mapas_ag_sem_filtro_data["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
@@ -807,11 +822,10 @@ with aba_conciliacao:
 
         venda_agg_todos = df_venda_ag.groupby(["Mapa", "Familia"])["P Vazia"].sum().reset_index()
         venda_agg_todos.rename(columns={"P Vazia": "Qtd_Saida_Unidades"}, inplace=True)
-        # Só os mapas conferidos INDIVIDUALMENTE entram aqui — os mapas conferidos em
-        # lote são tratados à parte mais abaixo, senão apareceriam duplicados (uma vez
-        # como "Faltou AG" individual, outra dentro da linha do lote). Usa a versão
-        # RESOLVIDA (consolidada) porque a Saída do relatório só existe sob o número final.
-        venda_agg = venda_agg_todos[venda_agg_todos["Mapa"].isin(set(resolver_mapas(MAPAS_INDIVIDUAIS)))]
+        # Mapas em lote são tratados à parte mais abaixo — tira eles daqui pra não
+        # duplicar (uma vez como linha individual, outra dentro da linha do lote).
+        _mapas_em_lote_resolvidos = set(resolver_mapas(MAPAS_EM_LOTE))
+        venda_agg = venda_agg_todos[venda_agg_todos["Mapa"].isin(MAPAS_PA_CONC - _mapas_em_lote_resolvidos)]
 
         # 2. RETORNO DO PA
         hist_vazio_pa = _hist_vazio_pa_bruto.copy()
@@ -842,7 +856,7 @@ with aba_conciliacao:
         df_concil = pd.merge(venda_agg, vazio_agg, on=["Mapa", "Familia"], how="outer").fillna(0)
 
         df_concil["PA"] = df_concil.apply(
-            lambda r: mapa_pa_lookup.get(r["Mapa"], "Aguardando Retorno") if r["PA"] == 0 else r["PA"],
+            lambda r: MAPA_PA_CLASSIFICACAO.get(r["Mapa"], mapa_pa_lookup.get(r["Mapa"], "Aguardando Retorno")) if r["PA"] == 0 else r["PA"],
             axis=1,
         )
         if tem_data_vazio_pa:
@@ -1066,7 +1080,7 @@ with aba_conciliacao:
 # =========================================================================
 with aba_conciliacao_sede:
     st.header("🏢 Conciliação de Mapas Sede (Previsto vs. Realizado)")
-    st.caption("Total Previsto x Total Realizado. Só mapas NÃO digitados na aba 'Vazio por PA'.")
+    st.caption("Total Previsto x Total Realizado. Só mapas classificados como SEDE no CONC.csv.")
 
     # =========================================================================
     # PREVISÃO DE CONTAGEM DO AG — quanto deveria estar de volta no armazém,
@@ -1154,13 +1168,18 @@ with aba_conciliacao_sede:
 
     st.divider()
 
-    if df_mapas_ag is None or df_mapas_ag.empty:
+    if df_mapas_ag_sem_filtro_data is None or df_mapas_ag_sem_filtro_data.empty:
         st.info("⚠️ Aguardando dados. É necessário ter o relatório 03.07.13 carregado para cruzar.")
+    elif not MAPAS_SEDE_CONC:
+        st.info("⚠️ Nenhum mapa classificado como SEDE no CONC.csv (no período selecionado).")
     else:
-        colunas_p = ["P Vazia"] + [cp for _, cp, cr in CATEGORIAS_AG_EXTRA if cp in df_mapas_ag.columns]
-        colunas_r = ["R Vazio"] + [cr for _, cp, cr in CATEGORIAS_AG_EXTRA if cr in df_mapas_ag.columns]
+        colunas_p = ["P Vazia"] + [cp for _, cp, cr in CATEGORIAS_AG_EXTRA if cp in df_mapas_ag_sem_filtro_data.columns]
+        colunas_r = ["R Vazio"] + [cr for _, cp, cr in CATEGORIAS_AG_EXTRA if cr in df_mapas_ag_sem_filtro_data.columns]
 
-        df_totais = df_mapas_ag.copy()
+        # Só os mapas que o CONC.csv classifica como SEDE entram aqui — não mais "tudo
+        # que não foi digitado no PA". Isso evita mapa de Tianguá/Granja vazando pra cá
+        # quando ele ainda não tem nenhuma conferência registrada.
+        df_totais = df_mapas_ag_sem_filtro_data[df_mapas_ag_sem_filtro_data["Mapa"].isin(MAPAS_SEDE_CONC)].copy()
         df_totais["Qtd_Saida_554"] = df_totais[colunas_p].sum(axis=1)
         df_totais["Qtd_Retorno_654"] = df_totais[colunas_r].sum(axis=1)
 
@@ -1179,7 +1198,6 @@ with aba_conciliacao_sede:
                 data_por_mapa = tmp.loc[idx].set_index("Mapa")["Data"].to_dict()
 
         df_concil_sede = df_totais.groupby(["Mapa", "Material"])[["Qtd_Saida_554", "Qtd_Retorno_654"]].sum().reset_index()
-        df_concil_sede = df_concil_sede[~df_concil_sede["Mapa"].isin(MAPAS_COM_CONFERENCIA_PA)]
 
         df_concil_sede["Data"] = df_concil_sede["Mapa"].map(data_por_mapa).fillna("-")
 
@@ -1299,16 +1317,20 @@ with aba_categorias_extra:
     st.header("📋 Divergências por Categoria")
     st.caption("Previsto x Realizado por categoria (Comodato, Devolução, Troca, Consignação).")
 
-    if df_mapas_ag is None or df_mapas_ag.empty:
+    MAPAS_CONC_TODOS = MAPAS_PA_CONC | MAPAS_SEDE_CONC
+    if df_mapas_ag_sem_filtro_data is None or df_mapas_ag_sem_filtro_data.empty:
         st.info("⚠️ Aguardando dados do relatório 03.07.13.")
+    elif not MAPAS_CONC_TODOS:
+        st.info("⚠️ Nenhum mapa no CONC.csv (no período selecionado).")
     else:
-        col_desc_cat = "Descricao" if "Descricao" in df_mapas_ag.columns else None
+        df_mapas_cat = df_mapas_ag_sem_filtro_data[df_mapas_ag_sem_filtro_data["Mapa"].isin(MAPAS_CONC_TODOS)]
+        col_desc_cat = "Descricao" if "Descricao" in df_mapas_cat.columns else None
 
         linhas_cat = []
         for nome_cat, col_p, col_r in CATEGORIAS_AG_EXTRA:
-            if col_p not in df_mapas_ag.columns or col_r not in df_mapas_ag.columns:
+            if col_p not in df_mapas_cat.columns or col_r not in df_mapas_cat.columns:
                 continue
-            agg = df_mapas_ag.groupby(["Mapa", "Material"])[[col_p, col_r]].sum().reset_index()
+            agg = df_mapas_cat.groupby(["Mapa", "Material"])[[col_p, col_r]].sum().reset_index()
             agg = agg[(agg[col_p] != 0) | (agg[col_r] != 0)]
             if agg.empty:
                 continue
@@ -1326,7 +1348,7 @@ with aba_categorias_extra:
             df_cat["Diferença"] = df_cat["Diferença_Num"].apply(lambda d: f"+{d}" if d > 0 else (f"{d}" if d < 0 else "0"))
 
             if col_desc_cat:
-                desc_lookup_cat = df_mapas_ag.drop_duplicates(subset=["Material"]).set_index("Material")[col_desc_cat].to_dict()
+                desc_lookup_cat = df_mapas_cat.drop_duplicates(subset=["Material"]).set_index("Material")[col_desc_cat].to_dict()
                 df_cat["AG"] = [com_apelido(cod, str(desc_lookup_cat.get(cod, cod))) for cod in df_cat["Material"]]
             else:
                 df_cat["AG"] = df_cat["Material"]
