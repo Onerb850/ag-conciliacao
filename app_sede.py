@@ -352,6 +352,79 @@ with aba_vazio_pa:
                 else:
                     st.warning("Nenhuma quantidade foi informada para salvar.")
 
+    st.divider()
+    st.markdown("### 📦 Conferência em Lote (vários mapas conferidos juntos)")
+    st.caption(
+        "Use quando o PA confere um monte de mapas de uma vez e só sabe o TOTAL (não dá "
+        "pra separar por mapa). O sistema soma a Saída de todos os mapas informados e "
+        "compara com esse total único — o resultado (Bateu/Faltou/Sobrou) vale pro LOTE "
+        "inteiro, sem apontar qual mapa específico está com problema."
+    )
+
+    with st.form("form_vazio_pa_lote", clear_on_submit=True):
+        col_data_l, col_pa_l, col_mapas_l = st.columns([1, 1, 2])
+        data_lote = col_data_l.date_input("Data da Descarga", value=date.today(), key="data_lote")
+        pa_lote = col_pa_l.selectbox("PA", ["Tianguá", "Granja"], key="pa_lote")
+        mapas_texto_lote = col_mapas_l.text_input(
+            "Números dos Mapas do lote (separados por vírgula)",
+            placeholder="ex: 257379, 257386, 257402",
+        )
+
+        st.markdown("**Caixas Físicas que Retornaram (TOTAL do lote)**")
+        valores_familia_lote = {
+            fam: st.number_input(rotulo_familia_vazio(fam), min_value=0, step=1, key=f"cx_lote_{fam}")
+            for fam in REGRAS_VAZIO
+        }
+
+        st.markdown("**Outros AG (TOTAL do lote, sem conversão)**")
+        cl1, cl2, cl3, cl4, cl5 = st.columns(5)
+        chapatex_lote = cl1.number_input("Chapatex (Und)", min_value=0, step=1, key="outros_lote_chapatex")
+        pbr1_lote = cl2.number_input("Pallet PBR1", min_value=0, step=1, key="outros_lote_pbr1")
+        pbr2_lote = cl3.number_input("Pallet PBR2", min_value=0, step=1, key="outros_lote_pbr2")
+        barril30_lote = cl4.number_input("Barril 30L", min_value=0, step=1, key="outros_lote_barril30")
+        barril50_lote = cl5.number_input("Barril 50L", min_value=0, step=1, key="outros_lote_barril50")
+
+        if st.form_submit_button("Salvar conferência em lote"):
+            mapas_limpos = sorted(set(limpa_mapa(m) for m in mapas_texto_lote.split(",") if m.strip()))
+            if len(mapas_limpos) < 2:
+                st.error("Informe pelo menos 2 mapas separados por vírgula — pra 1 mapa só, use o formulário individual acima.")
+            else:
+                mapas_chave = ";".join(mapas_limpos)
+                data_str_lote = data_lote.strftime("%d/%m/%Y")
+                gf_600_lote = valores_familia_lote.get("600ml", 0) + valores_familia_lote.get("Verde 600", 0)
+                linhas_lote = []
+
+                for familia, qtd_cx in valores_familia_lote.items():
+                    if qtd_cx > 0:
+                        r = REGRAS_VAZIO[familia]
+                        gf = gf_600_lote if familia == "600ml" else (0 if familia == "Verde 600" else qtd_cx * r["garrafeiras_por_cx"])
+                        linhas_lote.append({
+                            "Data": data_str_lote, "PA": pa_lote, "Mapas": mapas_chave, "Familia": familia,
+                            "Caixas": qtd_cx, "Garrafas": qtd_cx * r["garrafas_por_cx"], "Garrafeiras": gf, "Unidades": 0,
+                        })
+
+                for familia_outros, qtd_un in [
+                    ("Chapatex", chapatex_lote), ("Pallet PBR1", pbr1_lote), ("Pallet PBR2", pbr2_lote),
+                    ("Barril 30L", barril30_lote), ("Barril 50L", barril50_lote),
+                ]:
+                    if qtd_un > 0:
+                        linhas_lote.append({
+                            "Data": data_str_lote, "PA": pa_lote, "Mapas": mapas_chave, "Familia": familia_outros,
+                            "Caixas": 0, "Garrafas": 0, "Garrafeiras": 0, "Unidades": qtd_un,
+                        })
+
+                if linhas_lote:
+                    acumular_historico(pd.DataFrame(linhas_lote), "VazioPALote", ["Data", "PA", "Mapas", "Familia"])
+                    st.success(f"✅ Lote de {len(mapas_limpos)} mapas ({', '.join(mapas_limpos)}) salvo com sucesso!")
+                else:
+                    st.warning("Nenhuma quantidade foi informada para salvar.")
+
+    # =====================================================================
+    # A PARTIR DAQUI: só telas de conferência (tabelas, edição, exclusão) —
+    # os dois formulários de lançamento (individual e lote) ficam sempre no
+    # topo da aba, acima desta linha.
+    # =====================================================================
+
     df_vazio_pa = ler_aba_historico("VazioPA")
     if not df_vazio_pa.empty:
         st.divider()
@@ -441,76 +514,10 @@ with aba_vazio_pa:
                 salvar_aba_historico("VazioPA", df_restante)
                 st.rerun()
 
-    st.divider()
-    st.markdown("### 📦 Conferência em Lote (vários mapas conferidos juntos)")
-    st.caption(
-        "Use quando o PA confere um monte de mapas de uma vez e só sabe o TOTAL (não dá "
-        "pra separar por mapa). O sistema soma a Saída de todos os mapas informados e "
-        "compara com esse total único — o resultado (Bateu/Faltou/Sobrou) vale pro LOTE "
-        "inteiro, sem apontar qual mapa específico está com problema."
-    )
-
-    with st.form("form_vazio_pa_lote", clear_on_submit=True):
-        col_data_l, col_pa_l, col_mapas_l = st.columns([1, 1, 2])
-        data_lote = col_data_l.date_input("Data da Descarga", value=date.today(), key="data_lote")
-        pa_lote = col_pa_l.selectbox("PA", ["Tianguá", "Granja"], key="pa_lote")
-        mapas_texto_lote = col_mapas_l.text_input(
-            "Números dos Mapas do lote (separados por vírgula)",
-            placeholder="ex: 257379, 257386, 257402",
-        )
-
-        st.markdown("**Caixas Físicas que Retornaram (TOTAL do lote)**")
-        valores_familia_lote = {
-            fam: st.number_input(rotulo_familia_vazio(fam), min_value=0, step=1, key=f"cx_lote_{fam}")
-            for fam in REGRAS_VAZIO
-        }
-
-        st.markdown("**Outros AG (TOTAL do lote, sem conversão)**")
-        cl1, cl2, cl3, cl4, cl5 = st.columns(5)
-        chapatex_lote = cl1.number_input("Chapatex (Und)", min_value=0, step=1, key="outros_lote_chapatex")
-        pbr1_lote = cl2.number_input("Pallet PBR1", min_value=0, step=1, key="outros_lote_pbr1")
-        pbr2_lote = cl3.number_input("Pallet PBR2", min_value=0, step=1, key="outros_lote_pbr2")
-        barril30_lote = cl4.number_input("Barril 30L", min_value=0, step=1, key="outros_lote_barril30")
-        barril50_lote = cl5.number_input("Barril 50L", min_value=0, step=1, key="outros_lote_barril50")
-
-        if st.form_submit_button("Salvar conferência em lote"):
-            mapas_limpos = sorted(set(limpa_mapa(m) for m in mapas_texto_lote.split(",") if m.strip()))
-            if len(mapas_limpos) < 2:
-                st.error("Informe pelo menos 2 mapas separados por vírgula — pra 1 mapa só, use o formulário individual acima.")
-            else:
-                mapas_chave = ";".join(mapas_limpos)
-                data_str_lote = data_lote.strftime("%d/%m/%Y")
-                gf_600_lote = valores_familia_lote.get("600ml", 0) + valores_familia_lote.get("Verde 600", 0)
-                linhas_lote = []
-
-                for familia, qtd_cx in valores_familia_lote.items():
-                    if qtd_cx > 0:
-                        r = REGRAS_VAZIO[familia]
-                        gf = gf_600_lote if familia == "600ml" else (0 if familia == "Verde 600" else qtd_cx * r["garrafeiras_por_cx"])
-                        linhas_lote.append({
-                            "Data": data_str_lote, "PA": pa_lote, "Mapas": mapas_chave, "Familia": familia,
-                            "Caixas": qtd_cx, "Garrafas": qtd_cx * r["garrafas_por_cx"], "Garrafeiras": gf, "Unidades": 0,
-                        })
-
-                for familia_outros, qtd_un in [
-                    ("Chapatex", chapatex_lote), ("Pallet PBR1", pbr1_lote), ("Pallet PBR2", pbr2_lote),
-                    ("Barril 30L", barril30_lote), ("Barril 50L", barril50_lote),
-                ]:
-                    if qtd_un > 0:
-                        linhas_lote.append({
-                            "Data": data_str_lote, "PA": pa_lote, "Mapas": mapas_chave, "Familia": familia_outros,
-                            "Caixas": 0, "Garrafas": 0, "Garrafeiras": 0, "Unidades": qtd_un,
-                        })
-
-                if linhas_lote:
-                    acumular_historico(pd.DataFrame(linhas_lote), "VazioPALote", ["Data", "PA", "Mapas", "Familia"])
-                    st.success(f"✅ Lote de {len(mapas_limpos)} mapas ({', '.join(mapas_limpos)}) salvo com sucesso!")
-                else:
-                    st.warning("Nenhuma quantidade foi informada para salvar.")
-
     df_vazio_lote = ler_aba_historico("VazioPALote")
     if not df_vazio_lote.empty:
-        st.markdown("#### Lotes conferidos")
+        st.divider()
+        st.markdown("#### 📦 Lotes conferidos")
         df_lote_exib = df_vazio_lote.copy()
         for col in ["Caixas", "Garrafas", "Garrafeiras", "Unidades"]:
             if col in df_lote_exib.columns:
@@ -537,6 +544,8 @@ with aba_vazio_pa:
                 ]
                 salvar_aba_historico("VazioPALote", df_restante_lote)
                 st.rerun()
+
+
 
 
 # =========================================================================
