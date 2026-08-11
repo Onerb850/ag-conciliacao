@@ -788,9 +788,20 @@ with aba_conciliacao:
         if itens_problema.empty:
             st.success("🎉 Nenhuma diferença — tudo bateu certinho!")
         else:
-            st.markdown("**Itens com diferença:**")
-            colunas_resumo_prob = ["Mapa"] + (["Data"] if tem_data_vazio_pa else []) + ["PA", "Familia", "Diferença", "Status"]
-            renderizar_tabela_limpa(itens_problema[colunas_resumo_prob], colunas_resumo_prob)
+            eh_lote = itens_problema["Mapa"].str.startswith("Lote:")
+            itens_problema_individual = itens_problema[~eh_lote]
+            itens_problema_lote = itens_problema[eh_lote].copy()
+
+            if not itens_problema_individual.empty:
+                st.markdown("**Itens com diferença (mapas individuais):**")
+                colunas_resumo_prob = ["Mapa"] + (["Data"] if tem_data_vazio_pa else []) + ["PA", "Familia", "Diferença", "Status"]
+                renderizar_tabela_limpa(itens_problema_individual[colunas_resumo_prob], colunas_resumo_prob)
+
+            if not itens_problema_lote.empty:
+                st.markdown("**Itens com diferença (lotes):**")
+                itens_problema_lote["Mapas"] = itens_problema_lote["Mapa"].str.replace("Lote: ", "", regex=False)
+                colunas_resumo_lote = ["Mapas"] + (["Data"] if tem_data_vazio_pa else []) + ["PA", "Familia", "Diferença", "Status"]
+                renderizar_tabela_limpa(itens_problema_lote[colunas_resumo_lote], colunas_resumo_lote)
 
         with st.expander("📄 Ver tabela completa (todos os itens, inclusive os que bateram)"):
             renderizar_tabela_limpa(df_display, colunas_exibir_pa)
