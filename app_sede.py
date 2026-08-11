@@ -841,6 +841,18 @@ with aba_conciliacao:
         hist_vazio_pa["Qtd_Retorno_Unidades"] = pd.to_numeric(hist_vazio_pa["Garrafas"], errors='coerce').fillna(0) + \
                                                 pd.to_numeric(hist_vazio_pa["Unidades"], errors='coerce').fillna(0)
 
+        # Alerta: um mapa não pode estar registrado individualmente E dentro de um lote
+        # ao mesmo tempo — a Saída dele é excluída daqui (fica só no lote), então o
+        # retorno individual apareceria inteiro como "Sobrou AG" sem explicação.
+        _mapas_conflito = set(hist_vazio_pa["Mapa"].unique()) & _mapas_em_lote_resolvidos
+        if _mapas_conflito:
+            st.error(
+                f"⚠️ Mapa(s) registrados tanto individualmente quanto em lote — isso zera a "
+                f"Saída do lado individual: {', '.join(sorted(_mapas_conflito, key=lambda m: int(m) if m.isdigit() else 0))}. "
+                "Apague o registro individual OU o lote pra esses mapas (seção 'Editar ou Apagar "
+                "Registros' / 'Apagar um lote', mais abaixo nesta aba)."
+            )
+
         # PA "dono" de cada mapa (já resolvido) — usado pra não deixar uma família
         # faltante "sumir" sob um rótulo genérico quando o conferente não digitou
         # retorno pra ela.
