@@ -32,6 +32,11 @@ st.set_page_config(page_title="Conciliação de Mapas (AG)", layout="wide")
 st.title("⚖️ Conciliação de Mapas (AG)")
 st.caption("_\"Balança enganosa é abominação ao SENHOR, mas o peso justo lhe é agradável.\" — Provérbios 11:1_")
 
+# Aba separada no historico_ag.xlsx só pra dados de simulação — nunca mistura com a
+# aba "VazioPA" de produção. Ativar o modo simulação (sidebar) troca de qual aba o
+# app lê, sem apagar nem sobrescrever nada real.
+NOME_ABA_SIMULACAO = "VazioPA_Simulacao"
+
 REGRAS_VAZIO = {
     "300ml": {"garrafas_por_cx": 23, "garrafeiras_por_cx": 1},
     "600ml": {"garrafas_por_cx": 24, "garrafeiras_por_cx": 1},
@@ -265,6 +270,17 @@ with st.sidebar:
         data_inicio = intervalo_datas[0] if isinstance(intervalo_datas, tuple) else intervalo_datas
         data_fim = date.today()
 
+    st.divider()
+    modo_simulacao = st.checkbox(
+        "🧪 Modo simulação",
+        value=False,
+        key="modo_simulacao_ativo",
+        help="Mostra dados de teste (gerados na aba 'Vazio por PA') em vez dos reais. Não mexe nos dados de produção.",
+    )
+
+if modo_simulacao:
+    st.warning("🧪 **MODO SIMULAÇÃO ATIVO** — os dados de conferência abaixo são de teste, não reais. Desative na sidebar pra voltar ao normal.")
+
 # --- De Material: usado pra classificar por Código e pra filtrar itens válidos de AG ---
 df_de_material = carregar(ARQUIVO_DE_MATERIAL)
 if df_de_material is not None and "Promax" in df_de_material.columns:
@@ -401,6 +417,51 @@ with st.sidebar:
     else:
         st.success(f"{ARQUIVO_MAPAS_AG.name}: {len(df_mapas_ag)} linha(s) entre {_periodo_str}.")
 
+
+def gerar_simulacao_perfeita(data_alvo) -> pd.DataFrame:
+    """Pra cada mapa Tianguá/Granja do CONC.csv na data escolhida, monta uma linha de
+    retorno = saída exata (garrafas soltas, sem caixas/garrafeiras/unidades) — simula
+    uma conferência 100% perfeita, só pra teste visual. Ignora consolidação de mapas
+    (rara em Tianguá/Granja) usando direto o número resolvido."""
+    if df_mapa_pa is None or df_mapa_pa.empty or df_mapas_ag_sem_filtro_data is None or df_mapas_ag_sem_filtro_data.empty:
+        return pd.DataFrame()
+
+    data_str = data_alvo.strftime("%d/%m/%Y")
+    mapas_pa_sim = df_mapa_pa[
+        (df_mapa_pa["Data"] == data_str) & (df_mapa_pa["PA"].str.upper().isin(["TIANGUÁ", "GRANJA"]))
+    ][["Mapa", "PA"]].drop_duplicates().copy()
+    if mapas_pa_sim.empty:
+        return pd.DataFrame()
+
+    mapas_pa_sim["MapaResolvido"] = mapas_pa_sim["Mapa"].apply(resolver_mapa)
+    pa_normalizado = {"TIANGUÁ": "Tianguá", "GRANJA": "Granja"}
+    mapas_pa_sim["PA"] = mapas_pa_sim["PA"].str.upper().map(pa_normalizado)
+    pa_lookup_sim = mapas_pa_sim.groupby("MapaResolvido")["PA"].first().to_dict()
+
+    familia_tipo_sim = df_mapas_ag_sem_filtro_data["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
+    df_sim = df_mapas_ag_sem_filtro_data.copy()
+    df_sim["Familia"] = familia_tipo_sim.apply(lambda ft: ft[0])
+    df_sim["Tipo"] = familia_tipo_sim.apply(lambda ft: ft[1])
+    df_sim = df_sim[(df_sim["Familia"] != "Outro") & (df_sim["Tipo"] != "Garrafeira")]
+    df_sim = df_sim[df_sim["Mapa"].isin(mapas_pa_sim["MapaResolvido"].unique())]
+
+    saida_sim = df_sim.groupby(["Mapa", "Familia"])["P Vazia"].sum().reset_index()
+    saida_sim = saida_sim[saida_sim["P Vazia"] > 0]
+
+    linhas = []
+    for _, r in saida_sim.iterrows():
+        linhas.append({
+            "Data": data_str,
+            "PA": pa_lookup_sim.get(r["Mapa"], "Tianguá"),
+            "Mapa": r["Mapa"],
+            "Familia": r["Familia"],
+            "Caixas": 0,
+            "Garrafas": int(r["P Vazia"]),
+            "Garrafeiras": 0,
+            "Unidades": 0,
+        })
+    return pd.DataFrame(linhas)
+
 aba_vazio_pa, aba_conciliacao, aba_conciliacao_sede, aba_categorias_extra = st.tabs(
     ["Vazio por PA", "Conciliação Mapas PA", "Conciliação Mapas Sede", "Outras Categorias"]
 )
@@ -414,7 +475,11 @@ def mapas_da_lote(mapas_str: str) -> list[str]:
     return [limpa_mapa(m) for m in str(mapas_str).split(";") if str(m).strip()]
 
 
-_hist_vazio_pa_bruto = ler_aba_historico("VazioPA")
+_hist_vazio_pa_bruto = ler_aba_historico(NOME_ABA_SIMULACAO if modo_simulacao else "VazioPA")
+# Usado em todo o formulário/tabela/edição/exclusão da aba "Vazio por PA" — com a
+# simulação ativa, a aba inteira vira um sandbox isolado (lê e grava só na aba de
+# simulação); desativada, volta a mexer só na aba real "VazioPA".
+ABA_VAZIO_PA_ATIVA = NOME_ABA_SIMULACAO if modo_simulacao else "VazioPA"
 if not _hist_vazio_pa_bruto.empty and "Mapa" in _hist_vazio_pa_bruto.columns:
     MAPAS_INDIVIDUAIS = set(_hist_vazio_pa_bruto["Mapa"].apply(limpa_mapa).unique())
 else:
@@ -500,7 +565,7 @@ with aba_vazio_pa:
                         })
 
                 if linhas_pa:
-                    acumular_historico(pd.DataFrame(linhas_pa), "VazioPA", ["Data", "PA", "Mapa", "Familia"])
+                    acumular_historico(pd.DataFrame(linhas_pa), ABA_VAZIO_PA_ATIVA, ["Data", "PA", "Mapa", "Familia"])
                     st.success(f"✅ Retorno do mapa {mapa_numero} salvo com sucesso!")
                 else:
                     st.warning("Nenhuma quantidade foi informada para salvar.")
@@ -576,7 +641,7 @@ with aba_vazio_pa:
     # topo da aba, acima desta linha.
     # =====================================================================
 
-    df_vazio_pa = ler_aba_historico("VazioPA")
+    df_vazio_pa = ler_aba_historico(ABA_VAZIO_PA_ATIVA)
     if not df_vazio_pa.empty:
         st.divider()
         st.markdown("### 🚚 Detalhe de Retorno por Mapa")
@@ -646,7 +711,7 @@ with aba_vazio_pa:
                         "Data": edit_data, "PA": pa_atual, "Mapa": edit_mapa, "Familia": edit_familia,
                         "Caixas": novo_caixas, "Garrafas": novo_garrafas, "Garrafeiras": novo_garrafeiras, "Unidades": novo_unidades,
                     }])
-                    acumular_historico(nova_linha, "VazioPA", ["Data", "PA", "Mapa", "Familia"])
+                    acumular_historico(nova_linha, ABA_VAZIO_PA_ATIVA, ["Data", "PA", "Mapa", "Familia"])
                     st.success(f"✅ Item '{edit_familia}' do mapa {edit_mapa} atualizado!")
                     st.rerun()
 
@@ -662,7 +727,7 @@ with aba_vazio_pa:
             c_btn.write("")
             if c_btn.button("🗑️ Apagar este Mapa", type="primary", use_container_width=True):
                 df_restante = df_vazio_pa[~((df_vazio_pa["Data"] == del_data) & (df_vazio_pa["Mapa"].astype(str) == del_mapa))]
-                salvar_aba_historico("VazioPA", df_restante)
+                salvar_aba_historico(ABA_VAZIO_PA_ATIVA, df_restante)
                 st.rerun()
 
     df_vazio_lote = ler_aba_historico("VazioPALote")
@@ -695,6 +760,24 @@ with aba_vazio_pa:
                 ]
                 salvar_aba_historico("VazioPALote", df_restante_lote)
                 st.rerun()
+
+    st.divider()
+    with st.expander("🧪 Modo Simulação (dados de teste)", expanded=False):
+        st.caption("Gera retorno = saída perfeita pra todos os mapas Tianguá/Granja de uma data (via CONC.csv). Grava numa aba separada, nunca mistura com produção.")
+        data_simulacao = st.date_input("Data pra simular", value=date.today() - timedelta(days=1), key="data_gerar_simulacao")
+
+        col_sim1, col_sim2 = st.columns(2)
+        if col_sim1.button("🧪 Gerar simulação", use_container_width=True):
+            df_simulado = gerar_simulacao_perfeita(data_simulacao)
+            if df_simulado.empty:
+                st.warning("Nenhum mapa Tianguá/Granja encontrado pra essa data (confira o CONC.csv e o 03.07.13).")
+            else:
+                salvar_aba_historico(NOME_ABA_SIMULACAO, df_simulado)
+                st.success(f"{len(df_simulado)} linha(s) simuladas geradas. Ative '🧪 Modo simulação' na sidebar pra ver.")
+
+        if col_sim2.button("🗑️ Apagar simulação", use_container_width=True):
+            salvar_aba_historico(NOME_ABA_SIMULACAO, pd.DataFrame(columns=["Data", "PA", "Mapa", "Familia", "Caixas", "Garrafas", "Garrafeiras", "Unidades"]))
+            st.success("Dados de simulação apagados.")
 
 
 
