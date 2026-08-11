@@ -273,7 +273,10 @@ lookup_ag = montar_lookup_ag_por_codigo(df_de_material) if df_de_material is not
 
 # --- Mapa PA: diz de qual PA é cada mapa numa data — alimenta a busca automática de
 # mapas na Conferência em Lote, pra o conferente não precisar digitar número nenhum.
+# Coluna opcional "MAPA CONSOLIDADO": quando vários mapas viram um só no relatório
+# (ex: 257682 + 257685 → 257693), essa coluna traz o número final pra cada original.
 df_mapa_pa = carregar(ARQUIVO_MAPA_PA)
+MAPA_CONSOLIDADO_LOOKUP: dict[str, str] = {}
 if df_mapa_pa is not None:
     df_mapa_pa = df_mapa_pa.copy()
     df_mapa_pa.columns = df_mapa_pa.columns.str.strip()
@@ -286,6 +289,8 @@ if df_mapa_pa is not None:
             _renomear_mapa_pa[_col] = "Mapa"
         elif _col_upper in ("PONTO DE APOIO", "PA"):
             _renomear_mapa_pa[_col] = "PA"
+        elif _col_upper == "MAPA CONSOLIDADO":
+            _renomear_mapa_pa[_col] = "MapaConsolidado"
     df_mapa_pa = df_mapa_pa.rename(columns=_renomear_mapa_pa)
 
     if "Mapa" in df_mapa_pa.columns:
@@ -295,11 +300,56 @@ if df_mapa_pa is not None:
         df_mapa_pa["Data"] = _dt_mapa_pa.dt.strftime("%d/%m/%Y")
     if "PA" in df_mapa_pa.columns:
         df_mapa_pa["PA"] = df_mapa_pa["PA"].astype(str).str.strip()
+    if "MapaConsolidado" in df_mapa_pa.columns:
+        df_mapa_pa["MapaConsolidado"] = df_mapa_pa["MapaConsolidado"].apply(
+            lambda v: limpa_mapa(v) if str(v).strip() not in ("", "nan", "0") else ""
+        )
+        for _, _linha in df_mapa_pa.iterrows():
+            if _linha["MapaConsolidado"] and _linha["MapaConsolidado"] != _linha["Mapa"]:
+                MAPA_CONSOLIDADO_LOOKUP[_linha["Mapa"]] = _linha["MapaConsolidado"]
+
+
+def resolver_mapa(mapa: str) -> str:
+    """Se o mapa foi consolidado em outro (planilha CONC, coluna MAPA CONSOLIDADO),
+    devolve o número final — senão devolve o próprio mapa sem alteração."""
+    return MAPA_CONSOLIDADO_LOOKUP.get(mapa, mapa)
+
+
+def resolver_mapas(mapas) -> list[str]:
+    """Aplica resolver_mapa numa lista, sem duplicar quando vários originais caem no
+    mesmo mapa consolidado (ex: 257682 e 257685 os dois viram 257693 uma vez só)."""
+    resolvidos: list[str] = []
+    vistos: set[str] = set()
+    for m in mapas:
+        alvo = resolver_mapa(m)
+        if alvo not in vistos:
+            vistos.add(alvo)
+            resolvidos.append(alvo)
+    return resolvidos
+
+
+# Sentido inverso — dado o mapa consolidado, quais originais viraram ele. Usado só pra
+# deixar a exibição clara ("257682+257685 (→257693)") sem mudar o cálculo.
+REVERSE_MAPA_CONSOLIDADO: dict[str, list[str]] = {}
+for _orig, _cons in MAPA_CONSOLIDADO_LOOKUP.items():
+    REVERSE_MAPA_CONSOLIDADO.setdefault(_cons, []).append(_orig)
+
+
+def rotulo_mapa(mapa: str) -> str:
+    """Número do mapa pra exibição — se ele é um consolidado de vários originais,
+    mostra 'orig1+orig2 (→consolidado)'; senão mostra o número normalmente."""
+    originais = REVERSE_MAPA_CONSOLIDADO.get(mapa)
+    if not originais:
+        return mapa
+    ordenados = sorted(originais, key=lambda m: int(m) if str(m).isdigit() else 0)
+    return f"{'+'.join(ordenados)} (→{mapa})"
 
 
 def buscar_mapas_por_data_pa(data_alvo, pa_alvo: str) -> list[str]:
     """Consulta df_mapa_pa e devolve os números de mapa cadastrados pra essa Data+PA —
-    é isso que substitui o campo de digitação manual na Conferência em Lote."""
+    é isso que substitui o campo de digitação manual na Conferência em Lote. Devolve os
+    números ORIGINAIS (não resolvidos) — a resolução de consolidação acontece só na
+    hora de buscar a Saída, não aqui."""
     if df_mapa_pa is None or df_mapa_pa.empty or "Data" not in df_mapa_pa.columns or "PA" not in df_mapa_pa.columns:
         return []
     data_str = data_alvo.strftime("%d/%m/%Y")
@@ -377,8 +427,11 @@ if not _hist_lote_bruto.empty and "Mapas" in _hist_lote_bruto.columns:
         MAPAS_EM_LOTE.update(mapas_da_lote(_mapas_str))
 
 # Um mapa é "conferido no PA" se apareceu digitado individualmente OU dentro de um
-# lote — nos dois casos ele sai da Conciliação Mapas Sede (já foi conferido aqui).
-MAPAS_COM_CONFERENCIA_PA = MAPAS_INDIVIDUAIS | MAPAS_EM_LOTE
+# lote — nos dois casos ele sai da Conciliação Mapas Sede. Inclui também a versão
+# resolvida (consolidada): se 257682 foi conferido mas o relatório só tem 257693, é
+# 257693 que precisa sair da Sede, senão ele apareceria duplicado nas duas telas.
+_mapas_conferidos_pa_bruto = MAPAS_INDIVIDUAIS | MAPAS_EM_LOTE
+MAPAS_COM_CONFERENCIA_PA = _mapas_conferidos_pa_bruto | set(resolver_mapas(_mapas_conferidos_pa_bruto))
 
 
 # =========================================================================
@@ -673,12 +726,17 @@ with aba_conciliacao:
         venda_agg_todos.rename(columns={"P Vazia": "Qtd_Saida_Unidades"}, inplace=True)
         # Só os mapas conferidos INDIVIDUALMENTE entram aqui — os mapas conferidos em
         # lote são tratados à parte mais abaixo, senão apareceriam duplicados (uma vez
-        # como "Faltou AG" individual, outra dentro da linha do lote).
-        venda_agg = venda_agg_todos[venda_agg_todos["Mapa"].isin(MAPAS_INDIVIDUAIS)]
+        # como "Faltou AG" individual, outra dentro da linha do lote). Usa a versão
+        # RESOLVIDA (consolidada) porque a Saída do relatório só existe sob o número final.
+        venda_agg = venda_agg_todos[venda_agg_todos["Mapa"].isin(set(resolver_mapas(MAPAS_INDIVIDUAIS)))]
 
         # 2. RETORNO DO PA
         hist_vazio_pa = _hist_vazio_pa_bruto.copy()
         hist_vazio_pa["Mapa"] = hist_vazio_pa["Mapa"].apply(limpa_mapa)
+        # Se o mapa foi consolidado (coluna MAPA CONSOLIDADO do CONC.csv), soma o
+        # retorno de todos os originais que caem no mesmo consolidado antes de comparar
+        # — senão cada um bateria errado sozinho contra a Saída combinada dos dois.
+        hist_vazio_pa["Mapa"] = hist_vazio_pa["Mapa"].apply(resolver_mapa)
 
         if "Garrafas" not in hist_vazio_pa.columns: hist_vazio_pa["Garrafas"] = 0
         if "Unidades" not in hist_vazio_pa.columns: hist_vazio_pa["Unidades"] = 0
@@ -686,8 +744,9 @@ with aba_conciliacao:
         hist_vazio_pa["Qtd_Retorno_Unidades"] = pd.to_numeric(hist_vazio_pa["Garrafas"], errors='coerce').fillna(0) + \
                                                 pd.to_numeric(hist_vazio_pa["Unidades"], errors='coerce').fillna(0)
 
-        # PA "dono" de cada mapa — usado pra não deixar uma família faltante "sumir" sob
-        # um rótulo genérico quando o conferente não digitou retorno pra ela.
+        # PA "dono" de cada mapa (já resolvido) — usado pra não deixar uma família
+        # faltante "sumir" sob um rótulo genérico quando o conferente não digitou
+        # retorno pra ela.
         mapa_pa_lookup = hist_vazio_pa.groupby("Mapa")["PA"].first().to_dict()
 
         colunas_agrupamento_vazio = ["Mapa", "PA", "Familia"]
@@ -706,6 +765,10 @@ with aba_conciliacao:
         if tem_data_vazio_pa:
             df_concil["Data"] = df_concil["Data"].replace(0, "-")
 
+        # Troca o número puro do Mapa pelo rótulo consolidado quando aplicável — só
+        # muda a exibição, o cálculo acima já foi feito com o número resolvido.
+        df_concil["Mapa"] = df_concil["Mapa"].apply(rotulo_mapa)
+
         # ==================== LOTE (vários mapas conferidos juntos) ====================
         # Pra cada lote+família digitado, soma a Saída de TODOS os mapas do lote (na
         # venda_agg_todos, sem o filtro de individuais) e compara com o total único
@@ -723,11 +786,15 @@ with aba_conciliacao:
             linhas_lote_concil = []
             for _, linha_lote in lote_retorno_agg.iterrows():
                 mapas_lote = mapas_da_lote(linha_lote["Mapas"])
+                mapas_lote_resolvidos = resolver_mapas(mapas_lote)
                 saida_lote = venda_agg_todos[
-                    venda_agg_todos["Mapa"].isin(mapas_lote) & (venda_agg_todos["Familia"] == linha_lote["Familia"])
+                    venda_agg_todos["Mapa"].isin(mapas_lote_resolvidos) & (venda_agg_todos["Familia"] == linha_lote["Familia"])
                 ]["Qtd_Saida_Unidades"].sum()
+                rotulo_mapas_lote = ", ".join(mapas_lote)
+                if mapas_lote_resolvidos != mapas_lote:
+                    rotulo_mapas_lote += f" (consolidados: {', '.join(mapas_lote_resolvidos)})"
                 linha_final = {
-                    "Mapa": f"Lote: {', '.join(mapas_lote)}",
+                    "Mapa": f"Lote: {rotulo_mapas_lote}",
                     "PA": linha_lote["PA"],
                     "Familia": linha_lote["Familia"],
                     "Qtd_Saida_Unidades": saida_lote,
@@ -939,10 +1006,13 @@ with aba_conciliacao_sede:
         st.info("⚠️ Aguardando dados do relatório 03.07.13.")
     else:
         data_previsao_str = data_previsao.strftime("%d/%m/%Y")
-        mapas_previsao = sorted(
+        mapas_previsao_originais = sorted(
             df_mapa_pa[df_mapa_pa["Data"] == data_previsao_str]["Mapa"].dropna().unique().tolist(),
             key=lambda m: int(m) if str(m).isdigit() else 0,
         )
+        # Resolvido: mapas consolidados (ex: 257682+257685→257693) contam uma vez só —
+        # a Saída deles só existe sob o número final no relatório.
+        mapas_previsao = resolver_mapas(mapas_previsao_originais)
 
         if not mapas_previsao:
             st.warning(f"Nenhum mapa cadastrado em {data_previsao_str} na planilha '{ARQUIVO_MAPA_PA.name}'.")
