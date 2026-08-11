@@ -385,7 +385,7 @@ MAPAS_COM_CONFERENCIA_PA = MAPAS_INDIVIDUAIS | MAPAS_EM_LOTE
 # ABA VAZIO POR PA (conferência física digitada pelo conferente)
 # =========================================================================
 with aba_vazio_pa:
-    st.caption("Conferência do vazio por PA e mapa. Alimenta a Conciliação Mapas PA, ao lado.")
+    st.caption("Conferência do vazio por PA e mapa.")
 
     with st.form("form_vazio_pa", clear_on_submit=True):
         col_data, col_pa, col_mapa = st.columns(3)
@@ -454,13 +454,7 @@ with aba_vazio_pa:
 
     st.divider()
     st.markdown("### 📦 Conferência em Lote (vários mapas conferidos juntos)")
-    st.caption(
-        "Use quando o PA confere um monte de mapas de uma vez e só sabe o TOTAL (não dá "
-        "pra separar por mapa). Escolha a Data e o PA — os mapas são encontrados "
-        "automaticamente na planilha 'Mapa PA', sem precisar digitar número nenhum. O "
-        "sistema soma a Saída de todos esses mapas e compara com o total que você "
-        "digitar — o resultado (Bateu/Faltou/Sobrou) vale pro LOTE inteiro."
-    )
+    st.caption("Use quando só souber o TOTAL, sem separar por mapa.")
 
     col_data_l, col_pa_l = st.columns(2)
     data_lote = col_data_l.date_input("Data da Descarga", value=date.today(), key="data_lote")
@@ -582,11 +576,11 @@ with aba_vazio_pa:
                 if not linhas_familia.empty:
                     linha_atual = linhas_familia.iloc[0]
                     pa_atual = linha_atual["PA"]
-                    st.caption(f"Editando: Mapa {edit_mapa} · {pa_atual} · {edit_data} · {edit_familia}")
+                    st.caption(f"Mapa {edit_mapa} · {pa_atual} · {edit_data} · {edit_familia}")
                 else:
                     linha_atual = {}
                     pa_atual = pa_padrao
-                    st.caption(f"Adicionando item novo: Mapa {edit_mapa} · {pa_atual} · {edit_data} · {edit_familia} (ainda não digitado)")
+                    st.caption(f"Novo: Mapa {edit_mapa} · {pa_atual} · {edit_data} · {edit_familia}")
 
                 ce1, ce2, ce3, ce4 = st.columns(4)
                 novo_caixas = ce1.number_input("Caixas", min_value=0, step=1, value=int(linha_atual.get("Caixas", 0)) if isinstance(linha_atual, pd.Series) else 0, key="edit_caixas")
@@ -657,7 +651,7 @@ with aba_vazio_pa:
 # =========================================================================
 with aba_conciliacao:
     st.header("⚖️ Conciliação de Mapas PA (Saída vs. Retorno conferente)")
-    st.caption("Cruza as quantidades físicas previstas (saída, do relatório 03.07.13) com o que foi conferido no retorno do PA. Só entram aqui mapas que foram digitados na aba 'Vazio por PA'.")
+    st.caption("Só mapas digitados na aba 'Vazio por PA'.")
 
     if df_mapas_ag_sem_filtro_data is None or df_mapas_ag_sem_filtro_data.empty or _hist_vazio_pa_bruto.empty:
         st.info("⚠️ Aguardando dados. É necessário ter o relatório 03.07.13 carregado e algum retorno digitado na aba 'Vazio por PA' para fazer o cruzamento.")
@@ -914,8 +908,7 @@ with aba_conciliacao:
         with st.expander("📄 Ver tabela completa (todos os itens, inclusive os que bateram)"):
             renderizar_tabela_limpa(df_display, colunas_exibir_pa)
 
-        st.caption("Nota 1: Mapas com status 'Faltou AG' saíram no Previsto e não tiveram (ou tiveram menos) retorno digitado na aba 'Vazio por PA'.")
-        st.caption("Nota 2: Mapas com status 'Sobrou AG' foram conferidos no PA com quantidade maior do que o Previsto (incluindo casos em que nada saiu, mas algo foi digitado). A diferença é sempre exibida na menor unidade física (garrafas ou unidades soltas).")
+        st.caption("Faltou AG = saiu e não retornou (ou retornou menos). Sobrou AG = retornou mais que o previsto.")
 
 
 # =========================================================================
@@ -923,7 +916,7 @@ with aba_conciliacao:
 # =========================================================================
 with aba_conciliacao_sede:
     st.header("🏢 Conciliação de Mapas Sede (Previsto vs. Realizado)")
-    st.caption("Cruza item a item o Total Previsto com o Total Realizado (soma de Vazio + Comodato + Devolução + Troca + Consignação + Rec. Consignação) — não importa em qual espécie o item saiu ou voltou, só o total. Só mapas NÃO digitados na aba 'Vazio por PA'.")
+    st.caption("Total Previsto x Total Realizado. Só mapas NÃO digitados na aba 'Vazio por PA'.")
 
     # =========================================================================
     # PREVISÃO DE CONTAGEM DO AG — quanto deveria estar de volta no armazém,
@@ -933,11 +926,7 @@ with aba_conciliacao_sede:
     # só a Data escolhida aqui importa.
     # =========================================================================
     st.markdown("### 📅 Previsão de Contagem do AG")
-    st.caption(
-        "O que saiu pra rota num dia deve voltar vazio pro armazém — normalmente na "
-        "manhã seguinte. Escolha o dia em que a rota SAIU e veja quanto de AG deveria "
-        "estar de volta (soma de todos os mapas daquele dia, Sede + Tianguá + Granja)."
-    )
+    st.caption("Quanto deveria voltar vazio, baseado no que saiu.")
     data_previsao = st.date_input(
         "Data em que a rota saiu",
         value=date.today() - timedelta(days=1),
@@ -963,13 +952,9 @@ with aba_conciliacao_sede:
             mapas_faltando = [m for m in mapas_previsao if m not in mapas_encontrados]
 
             if mapas_faltando:
-                st.warning(
-                    f"{len(mapas_faltando)} de {len(mapas_previsao)} mapa(s) da planilha '{ARQUIVO_MAPA_PA.name}' "
-                    f"ainda não aparecem no relatório 03.07.13: {', '.join(mapas_faltando)}. A previsão abaixo "
-                    "está incompleta até esses mapas entrarem no relatório."
-                )
+                st.warning(f"{len(mapas_faltando)} mapa(s) ainda não estão no relatório: {', '.join(mapas_faltando)}. Previsão incompleta.")
             else:
-                st.caption(f"Todos os {len(mapas_previsao)} mapa(s) de {data_previsao_str} foram encontrados no relatório 03.07.13.")
+                st.caption(f"{len(mapas_previsao)} mapa(s) encontrados.")
 
             if df_previsao.empty:
                 st.info("Nenhum dos mapas dessa data foi encontrado no relatório ainda.")
@@ -1012,7 +997,6 @@ with aba_conciliacao_sede:
                         else:
                             dados_outros_farol[ag_label] = dados_outros_farol.get(ag_label, 0) + qtd
 
-                    st.caption(f"Baseado na Saída dos mapas de {data_previsao_str} — quanto deveria estar de volta no armazém.")
                     renderizar_farol_previsao(dados_familia_farol, dados_outros_farol)
 
     st.divider()
@@ -1152,7 +1136,7 @@ with aba_conciliacao_sede:
         with st.expander("📄 Ver tabela completa (respeitando os filtros da tela)"):
             renderizar_tabela_limpa(df_display_sede, colunas_exibir_sede)
 
-        st.caption("Nota: Saída/Retorno somam Vazio + Comodato + Devolução + Troca + Consignação + Rec. Consignação. Pra ver em qual espécie está a diferença, use a aba 'Outras Categorias' filtrando pelo mesmo mapa.")
+        st.caption("Pra ver por espécie, use a aba 'Outras Categorias'.")
 
 
 # =========================================================================
@@ -1160,10 +1144,7 @@ with aba_conciliacao_sede:
 # =========================================================================
 with aba_categorias_extra:
     st.header("📋 Divergências por Categoria")
-    st.caption(
-        "Previsto x Realizado, direto do relatório 03.07.13, pra cada categoria além de Vazio "
-        "(essas não passam pela conferência manual do 'Vazio por PA' — comparação direta do relatório)."
-    )
+    st.caption("Previsto x Realizado por categoria (Comodato, Devolução, Troca, Consignação).")
 
     if df_mapas_ag is None or df_mapas_ag.empty:
         st.info("⚠️ Aguardando dados do relatório 03.07.13.")
@@ -1226,5 +1207,3 @@ with aba_categorias_extra:
                 df_cat_display,
                 ["Mapa", "AG", "Categoria", "Previsto", "Realizado", "Diferença", "Status"],
             )
-
-            st.caption("Cada linha é um Mapa+Item+Categoria com movimento previsto e/ou realizado — itens com Previsto=Realizado=0 nessa categoria não aparecem aqui.")
