@@ -258,11 +258,27 @@ aba_vazio_pa, aba_conciliacao, aba_conciliacao_sede, aba_categorias_extra = st.t
 # Roteamento: um mapa só entra na Conciliação Mapas PA se foi digitado na aba 'Vazio por
 # PA' pelo conferente; todo o resto cai na 'Conciliação Mapas Sede'. Esse histórico
 # (VazioPA) é pequeno — só o que o conferente digitou — e continua sendo salvo normalmente.
+def mapas_da_lote(mapas_str: str) -> list[str]:
+    """'257379;257386;257402' -> ['257379','257386','257402'] — ';' é o separador usado
+    pra guardar o conjunto de mapas de uma conferência em lote numa única célula."""
+    return [limpa_mapa(m) for m in str(mapas_str).split(";") if str(m).strip()]
+
+
 _hist_vazio_pa_bruto = ler_aba_historico("VazioPA")
 if not _hist_vazio_pa_bruto.empty and "Mapa" in _hist_vazio_pa_bruto.columns:
-    MAPAS_COM_CONFERENCIA_PA = set(_hist_vazio_pa_bruto["Mapa"].apply(limpa_mapa).unique())
+    MAPAS_INDIVIDUAIS = set(_hist_vazio_pa_bruto["Mapa"].apply(limpa_mapa).unique())
 else:
-    MAPAS_COM_CONFERENCIA_PA = set()
+    MAPAS_INDIVIDUAIS = set()
+
+_hist_lote_bruto = ler_aba_historico("VazioPALote")
+MAPAS_EM_LOTE = set()
+if not _hist_lote_bruto.empty and "Mapas" in _hist_lote_bruto.columns:
+    for _mapas_str in _hist_lote_bruto["Mapas"].unique():
+        MAPAS_EM_LOTE.update(mapas_da_lote(_mapas_str))
+
+# Um mapa é "conferido no PA" se apareceu digitado individualmente OU dentro de um
+# lote — nos dois casos ele sai da Conciliação Mapas Sede (já foi conferido aqui).
+MAPAS_COM_CONFERENCIA_PA = MAPAS_INDIVIDUAIS | MAPAS_EM_LOTE
 
 
 # =========================================================================
@@ -425,6 +441,103 @@ with aba_vazio_pa:
                 salvar_aba_historico("VazioPA", df_restante)
                 st.rerun()
 
+    st.divider()
+    st.markdown("### 📦 Conferência em Lote (vários mapas conferidos juntos)")
+    st.caption(
+        "Use quando o PA confere um monte de mapas de uma vez e só sabe o TOTAL (não dá "
+        "pra separar por mapa). O sistema soma a Saída de todos os mapas informados e "
+        "compara com esse total único — o resultado (Bateu/Faltou/Sobrou) vale pro LOTE "
+        "inteiro, sem apontar qual mapa específico está com problema."
+    )
+
+    with st.form("form_vazio_pa_lote", clear_on_submit=True):
+        col_data_l, col_pa_l, col_mapas_l = st.columns([1, 1, 2])
+        data_lote = col_data_l.date_input("Data da Descarga", value=date.today(), key="data_lote")
+        pa_lote = col_pa_l.selectbox("PA", ["Tianguá", "Granja"], key="pa_lote")
+        mapas_texto_lote = col_mapas_l.text_input(
+            "Números dos Mapas do lote (separados por vírgula)",
+            placeholder="ex: 257379, 257386, 257402",
+        )
+
+        st.markdown("**Caixas Físicas que Retornaram (TOTAL do lote)**")
+        valores_familia_lote = {
+            fam: st.number_input(rotulo_familia_vazio(fam), min_value=0, step=1, key=f"cx_lote_{fam}")
+            for fam in REGRAS_VAZIO
+        }
+
+        st.markdown("**Outros AG (TOTAL do lote, sem conversão)**")
+        cl1, cl2, cl3, cl4, cl5 = st.columns(5)
+        chapatex_lote = cl1.number_input("Chapatex (Und)", min_value=0, step=1, key="outros_lote_chapatex")
+        pbr1_lote = cl2.number_input("Pallet PBR1", min_value=0, step=1, key="outros_lote_pbr1")
+        pbr2_lote = cl3.number_input("Pallet PBR2", min_value=0, step=1, key="outros_lote_pbr2")
+        barril30_lote = cl4.number_input("Barril 30L", min_value=0, step=1, key="outros_lote_barril30")
+        barril50_lote = cl5.number_input("Barril 50L", min_value=0, step=1, key="outros_lote_barril50")
+
+        if st.form_submit_button("Salvar conferência em lote"):
+            mapas_limpos = sorted(set(limpa_mapa(m) for m in mapas_texto_lote.split(",") if m.strip()))
+            if len(mapas_limpos) < 2:
+                st.error("Informe pelo menos 2 mapas separados por vírgula — pra 1 mapa só, use o formulário individual acima.")
+            else:
+                mapas_chave = ";".join(mapas_limpos)
+                data_str_lote = data_lote.strftime("%d/%m/%Y")
+                gf_600_lote = valores_familia_lote.get("600ml", 0) + valores_familia_lote.get("Verde 600", 0)
+                linhas_lote = []
+
+                for familia, qtd_cx in valores_familia_lote.items():
+                    if qtd_cx > 0:
+                        r = REGRAS_VAZIO[familia]
+                        gf = gf_600_lote if familia == "600ml" else (0 if familia == "Verde 600" else qtd_cx * r["garrafeiras_por_cx"])
+                        linhas_lote.append({
+                            "Data": data_str_lote, "PA": pa_lote, "Mapas": mapas_chave, "Familia": familia,
+                            "Caixas": qtd_cx, "Garrafas": qtd_cx * r["garrafas_por_cx"], "Garrafeiras": gf, "Unidades": 0,
+                        })
+
+                for familia_outros, qtd_un in [
+                    ("Chapatex", chapatex_lote), ("Pallet PBR1", pbr1_lote), ("Pallet PBR2", pbr2_lote),
+                    ("Barril 30L", barril30_lote), ("Barril 50L", barril50_lote),
+                ]:
+                    if qtd_un > 0:
+                        linhas_lote.append({
+                            "Data": data_str_lote, "PA": pa_lote, "Mapas": mapas_chave, "Familia": familia_outros,
+                            "Caixas": 0, "Garrafas": 0, "Garrafeiras": 0, "Unidades": qtd_un,
+                        })
+
+                if linhas_lote:
+                    acumular_historico(pd.DataFrame(linhas_lote), "VazioPALote", ["Data", "PA", "Mapas", "Familia"])
+                    st.success(f"✅ Lote de {len(mapas_limpos)} mapas ({', '.join(mapas_limpos)}) salvo com sucesso!")
+                else:
+                    st.warning("Nenhuma quantidade foi informada para salvar.")
+
+    df_vazio_lote = ler_aba_historico("VazioPALote")
+    if not df_vazio_lote.empty:
+        st.markdown("#### Lotes conferidos")
+        df_lote_exib = df_vazio_lote.copy()
+        for col in ["Caixas", "Garrafas", "Garrafeiras", "Unidades"]:
+            if col in df_lote_exib.columns:
+                df_lote_exib[col] = pd.to_numeric(df_lote_exib[col], errors="coerce").fillna(0).astype(int)
+        df_lote_exib["Mapas"] = df_lote_exib["Mapas"].apply(lambda m: ", ".join(mapas_da_lote(m)))
+        st.dataframe(
+            df_lote_exib[["Data", "PA", "Mapas", "Familia", "Caixas", "Garrafas", "Garrafeiras", "Unidades"]],
+            width='stretch', hide_index=True,
+        )
+
+        with st.expander("🗑️ Apagar um lote", expanded=False):
+            cdl1, cdl2, cdl3 = st.columns([1, 2, 1])
+            datas_lote_exist = sorted(df_vazio_lote["Data"].unique(), key=lambda d: pd.to_datetime(d, dayfirst=True), reverse=True)
+            del_data_lote = cdl1.selectbox("Data", datas_lote_exist, key="del_data_lote")
+            lotes_na_data = sorted(df_vazio_lote[df_vazio_lote["Data"] == del_data_lote]["Mapas"].unique())
+            del_lote_chave = cdl2.selectbox(
+                "Lote", lotes_na_data, format_func=lambda m: ", ".join(mapas_da_lote(m)), key="del_lote_chave"
+            )
+            cdl3.write("")
+            cdl3.write("")
+            if cdl3.button("🗑️ Apagar", type="primary", use_container_width=True, key="btn_del_lote"):
+                df_restante_lote = df_vazio_lote[
+                    ~((df_vazio_lote["Data"] == del_data_lote) & (df_vazio_lote["Mapas"] == del_lote_chave))
+                ]
+                salvar_aba_historico("VazioPALote", df_restante_lote)
+                st.rerun()
+
 
 # =========================================================================
 # ABA DE CONCILIAÇÃO POR MAPA PA (VENDA x RETORNO CONFERENTE)
@@ -445,9 +558,12 @@ with aba_conciliacao:
         df_venda_ag["Tipo"] = familia_tipo_venda.apply(lambda ft: ft[1])
         df_venda_ag = df_venda_ag[(df_venda_ag["Familia"] != "Outro") & (df_venda_ag["Tipo"] != "Garrafeira")]
 
-        venda_agg = df_venda_ag.groupby(["Mapa", "Familia"])["P Vazia"].sum().reset_index()
-        venda_agg.rename(columns={"P Vazia": "Qtd_Saida_Unidades"}, inplace=True)
-        venda_agg = venda_agg[venda_agg["Mapa"].isin(MAPAS_COM_CONFERENCIA_PA)]
+        venda_agg_todos = df_venda_ag.groupby(["Mapa", "Familia"])["P Vazia"].sum().reset_index()
+        venda_agg_todos.rename(columns={"P Vazia": "Qtd_Saida_Unidades"}, inplace=True)
+        # Só os mapas conferidos INDIVIDUALMENTE entram aqui — os mapas conferidos em
+        # lote são tratados à parte mais abaixo, senão apareceriam duplicados (uma vez
+        # como "Faltou AG" individual, outra dentro da linha do lote).
+        venda_agg = venda_agg_todos[venda_agg_todos["Mapa"].isin(MAPAS_INDIVIDUAIS)]
 
         # 2. RETORNO DO PA
         hist_vazio_pa = _hist_vazio_pa_bruto.copy()
@@ -478,6 +594,40 @@ with aba_conciliacao:
         )
         if tem_data_vazio_pa:
             df_concil["Data"] = df_concil["Data"].replace(0, "-")
+
+        # ==================== LOTE (vários mapas conferidos juntos) ====================
+        # Pra cada lote+família digitado, soma a Saída de TODOS os mapas do lote (na
+        # venda_agg_todos, sem o filtro de individuais) e compara com o total único
+        # informado — gera 1 linha por lote+família, não 1 por mapa.
+        if not _hist_lote_bruto.empty and "Mapas" in _hist_lote_bruto.columns:
+            hist_lote = _hist_lote_bruto.copy()
+            if "Garrafas" not in hist_lote.columns: hist_lote["Garrafas"] = 0
+            if "Unidades" not in hist_lote.columns: hist_lote["Unidades"] = 0
+            hist_lote["Qtd_Retorno_Unidades"] = pd.to_numeric(hist_lote["Garrafas"], errors="coerce").fillna(0) + \
+                                                 pd.to_numeric(hist_lote["Unidades"], errors="coerce").fillna(0)
+
+            colunas_grp_lote = ["Mapas", "PA", "Familia"] + (["Data"] if "Data" in hist_lote.columns else [])
+            lote_retorno_agg = hist_lote.groupby(colunas_grp_lote)["Qtd_Retorno_Unidades"].sum().reset_index()
+
+            linhas_lote_concil = []
+            for _, linha_lote in lote_retorno_agg.iterrows():
+                mapas_lote = mapas_da_lote(linha_lote["Mapas"])
+                saida_lote = venda_agg_todos[
+                    venda_agg_todos["Mapa"].isin(mapas_lote) & (venda_agg_todos["Familia"] == linha_lote["Familia"])
+                ]["Qtd_Saida_Unidades"].sum()
+                linha_final = {
+                    "Mapa": f"Lote: {', '.join(mapas_lote)}",
+                    "PA": linha_lote["PA"],
+                    "Familia": linha_lote["Familia"],
+                    "Qtd_Saida_Unidades": saida_lote,
+                    "Qtd_Retorno_Unidades": linha_lote["Qtd_Retorno_Unidades"],
+                }
+                if tem_data_vazio_pa:
+                    linha_final["Data"] = linha_lote["Data"] if "Data" in linha_lote else "-"
+                linhas_lote_concil.append(linha_final)
+
+            if linhas_lote_concil:
+                df_concil = pd.concat([df_concil, pd.DataFrame(linhas_lote_concil)], ignore_index=True).fillna(0)
 
         df_concil["Fator"] = df_concil["Familia"].apply(fator_conversao_caixas)
 
