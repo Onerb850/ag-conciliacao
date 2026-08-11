@@ -238,9 +238,17 @@ if df_mapas_ag is not None:
         codigos_validos = set(df_de_material["Promax"].unique())
         df_mapas_ag = df_mapas_ag[df_mapas_ag["Material"].isin(codigos_validos)]
 
+    # Cópia SEM o filtro de período — usada só pra achar a Saída de um mapa específico
+    # na Conciliação Mapas PA (individual e lote). Ali o que importa é o NÚMERO do mapa
+    # digitado pelo conferente, não se a data do relatório cai dentro do período
+    # selecionado na sidebar (que é só um filtro de visualização pras outras abas).
+    df_mapas_ag_sem_filtro_data = df_mapas_ag.copy()
+
     if "Data" in df_mapas_ag.columns:
         _dt = pd.to_datetime(df_mapas_ag["Data"], dayfirst=True, errors="coerce")
         df_mapas_ag = df_mapas_ag[(_dt >= pd.Timestamp(data_inicio)) & (_dt <= pd.Timestamp(data_fim))]
+else:
+    df_mapas_ag_sem_filtro_data = None
 
 _periodo_str = f"{data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}"
 with st.sidebar:
@@ -555,14 +563,18 @@ with aba_conciliacao:
     st.header("⚖️ Conciliação de Mapas PA (Saída vs. Retorno conferente)")
     st.caption("Cruza as quantidades físicas previstas (saída, do relatório 03.07.13) com o que foi conferido no retorno do PA. Só entram aqui mapas que foram digitados na aba 'Vazio por PA'.")
 
-    if df_mapas_ag is None or df_mapas_ag.empty or _hist_vazio_pa_bruto.empty:
+    if df_mapas_ag_sem_filtro_data is None or df_mapas_ag_sem_filtro_data.empty or _hist_vazio_pa_bruto.empty:
         st.info("⚠️ Aguardando dados. É necessário ter o relatório 03.07.13 carregado e algum retorno digitado na aba 'Vazio por PA' para fazer o cruzamento.")
     else:
         # 1. VENDA (SAÍDA) — classificada pelo Código do Material via De Material.xlsx.
+        # Usa df_mapas_ag_sem_filtro_data (relatório INTEIRO, sem o filtro de período da
+        # sidebar): aqui quem decide se um mapa entra é o número do mapa digitado pelo
+        # conferente, não se a data do relatório cai dentro do período selecionado —
+        # senão um mapa de fora do período apareceria com Saída = 0 por engano.
         # Só entram garrafa/barril soltos (não garrafeira), igual ao Retorno digitado
         # manualmente, que também só conta Garrafas+Unidades (nunca Garrafeiras).
-        familia_tipo_venda = df_mapas_ag["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
-        df_venda_ag = df_mapas_ag.copy()
+        familia_tipo_venda = df_mapas_ag_sem_filtro_data["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
+        df_venda_ag = df_mapas_ag_sem_filtro_data.copy()
         df_venda_ag["Familia"] = familia_tipo_venda.apply(lambda ft: ft[0])
         df_venda_ag["Tipo"] = familia_tipo_venda.apply(lambda ft: ft[1])
         df_venda_ag = df_venda_ag[(df_venda_ag["Familia"] != "Outro") & (df_venda_ag["Tipo"] != "Garrafeira")]
