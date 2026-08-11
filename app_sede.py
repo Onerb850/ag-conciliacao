@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import date
+from datetime import date, timedelta
 
 from comum import (
     ARQUIVO_DE_MATERIAL,
@@ -874,6 +874,86 @@ with aba_conciliacao:
 with aba_conciliacao_sede:
     st.header("🏢 Conciliação de Mapas Sede (Previsto vs. Realizado)")
     st.caption("Cruza item a item o Total Previsto com o Total Realizado (soma de Vazio + Comodato + Devolução + Troca + Consignação + Rec. Consignação) — não importa em qual espécie o item saiu ou voltou, só o total. Só mapas NÃO digitados na aba 'Vazio por PA'.")
+
+    # =========================================================================
+    # PREVISÃO DE CONTAGEM DO AG — quanto deveria estar de volta no armazém,
+    # baseado no que saiu pra rota num dia (normalmente volta vazio no dia
+    # seguinte). Considera TODOS os mapas do dia (Sede + Tianguá + Granja
+    # juntos) e usa o relatório INTEIRO, sem o filtro de período da sidebar —
+    # só a Data escolhida aqui importa.
+    # =========================================================================
+    st.markdown("### 📅 Previsão de Contagem do AG")
+    st.caption(
+        "O que saiu pra rota num dia deve voltar vazio pro armazém — normalmente na "
+        "manhã seguinte. Escolha o dia em que a rota SAIU e veja quanto de AG deveria "
+        "estar de volta (soma de todos os mapas daquele dia, Sede + Tianguá + Granja)."
+    )
+    data_previsao = st.date_input(
+        "Data em que a rota saiu",
+        value=date.today() - timedelta(days=1),
+        key="data_previsao_contagem",
+    )
+
+    if df_mapa_pa is None or df_mapa_pa.empty:
+        st.error(f"Não encontrei '{ARQUIVO_MAPA_PA.name}' no Google Drive — a previsão usa essa planilha pra saber QUAIS mapas considerar naquele dia.")
+    elif df_mapas_ag_sem_filtro_data is None or df_mapas_ag_sem_filtro_data.empty:
+        st.info("⚠️ Aguardando dados do relatório 03.07.13.")
+    else:
+        data_previsao_str = data_previsao.strftime("%d/%m/%Y")
+        mapas_previsao = sorted(
+            df_mapa_pa[df_mapa_pa["Data"] == data_previsao_str]["Mapa"].dropna().unique().tolist(),
+            key=lambda m: int(m) if str(m).isdigit() else 0,
+        )
+
+        if not mapas_previsao:
+            st.warning(f"Nenhum mapa cadastrado em {data_previsao_str} na planilha '{ARQUIVO_MAPA_PA.name}'.")
+        else:
+            df_previsao = df_mapas_ag_sem_filtro_data[df_mapas_ag_sem_filtro_data["Mapa"].isin(mapas_previsao)].copy()
+            mapas_encontrados = set(df_previsao["Mapa"].unique())
+            mapas_faltando = [m for m in mapas_previsao if m not in mapas_encontrados]
+
+            if mapas_faltando:
+                st.warning(
+                    f"{len(mapas_faltando)} de {len(mapas_previsao)} mapa(s) da planilha '{ARQUIVO_MAPA_PA.name}' "
+                    f"ainda não aparecem no relatório 03.07.13: {', '.join(mapas_faltando)}. A previsão abaixo "
+                    "está incompleta até esses mapas entrarem no relatório."
+                )
+            else:
+                st.caption(f"Todos os {len(mapas_previsao)} mapa(s) de {data_previsao_str} foram encontrados no relatório 03.07.13.")
+
+            if df_previsao.empty:
+                st.info("Nenhum dos mapas dessa data foi encontrado no relatório ainda.")
+            else:
+                previsao_agg = df_previsao.groupby("Material")["P Vazia"].sum().reset_index()
+                previsao_agg = previsao_agg[previsao_agg["P Vazia"] > 0]
+
+                if previsao_agg.empty:
+                    st.info(f"Não houve saída de Vazio em {data_previsao_str}.")
+                else:
+                    if "Descricao" in df_previsao.columns:
+                        desc_previsao = df_previsao.drop_duplicates(subset=["Material"])[["Material", "Descricao"]].rename(columns={"Descricao": "Desc_Previsao"})
+                        previsao_agg = previsao_agg.merge(desc_previsao, on="Material", how="left")
+                        previsao_agg["AG"] = [
+                            com_apelido(cod, str(desc)) for cod, desc in zip(previsao_agg["Material"], previsao_agg["Desc_Previsao"].fillna(""))
+                        ]
+                    else:
+                        previsao_agg["AG"] = previsao_agg["Material"]
+
+                    fam_tipo_previsao = previsao_agg["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
+                    previsao_agg["Familia"] = fam_tipo_previsao.apply(lambda ft: ft[0])
+                    previsao_agg["Tipo"] = fam_tipo_previsao.apply(lambda ft: ft[1])
+                    previsao_agg["P Vazia"] = previsao_agg["P Vazia"].round(0).astype(int)
+                    previsao_agg["Previsão de Retorno"] = previsao_agg.apply(
+                        lambda r: formata_qtd_fisica(r["P Vazia"], r["Tipo"], r["Familia"]), axis=1
+                    )
+
+                    st.caption(f"Baseado na Saída dos mapas de {data_previsao_str} — quanto de cada item deveria estar de volta no armazém.")
+                    st.dataframe(
+                        previsao_agg[["AG", "Previsão de Retorno"]].sort_values("AG").rename(columns={"AG": "Item"}),
+                        use_container_width=True, hide_index=True,
+                    )
+
+    st.divider()
 
     if df_mapas_ag is None or df_mapas_ag.empty:
         st.info("⚠️ Aguardando dados. É necessário ter o relatório 03.07.13 carregado para cruzar.")
