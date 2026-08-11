@@ -100,6 +100,58 @@ def renderizar_cards_resumo(itens: list[tuple[str, int, str]] | list[tuple[str, 
         col.markdown(html_card, unsafe_allow_html=True)
 
 
+# Paleta inspirada no "FAROL AG" do usuário: cada família de garrafa tem uma cor de
+# identidade própria (faixa escura no topo do card + fundo pastel no corpo).
+CORES_FAROL_FAMILIA = {
+    "600ml": ("#1F3B57", "#EAF1F8"),
+    "Verde 600": ("#1F4720", "#E9F5EA"),
+    "300ml": ("#8A6D1B", "#FBF3DF"),
+    "1L": ("#2B2B2B", "#ECECEC"),
+}
+ORDEM_FAROL_FAMILIA = ["600ml", "Verde 600", "300ml", "1L"]
+
+
+def renderizar_farol_previsao(dados_familia: dict, dados_outros: dict) -> None:
+    """Visual tipo 'FAROL AG': um card colorido por família de garrafa (300/600/Verde/
+    Litrão) mostrando Caixas + garrafas soltas, e uma segunda fileira de cards escuros
+    pros itens que não convertem em caixa (Garrafeira, Pallet, Chapatex, Barril),
+    mostrando só a unidade. dados_familia: {familia: {"caixas": int, "soltas": int}}.
+    dados_outros: {rótulo: unidades}."""
+    familias_com_dado = [f for f in ORDEM_FAROL_FAMILIA if f in dados_familia]
+    if familias_com_dado:
+        cols = st.columns(len(familias_com_dado))
+        for col, fam in zip(cols, familias_com_dado):
+            d = dados_familia[fam]
+            cor_header, cor_body = CORES_FAROL_FAMILIA[fam]
+            rotulo = rotulo_familia_vazio(fam)
+            html = (
+                f'<div style="border-radius:12px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.08);">'
+                f'<div style="background:{cor_header}; color:white; padding:9px 12px; display:flex; align-items:center; gap:7px;">'
+                f'<span style="font-size:1.15em;">🍺</span>'
+                f'<span style="font-weight:700; font-size:13px; letter-spacing:0.3px;">{rotulo}</span>'
+                f'</div>'
+                f'<div style="background:{cor_body}; padding:14px 12px;">'
+                f'<div style="font-size:26px; font-weight:800; color:{cor_header}; line-height:1;">{d["caixas"]}'
+                f'<span style="font-size:13px; font-weight:600;"> cx</span></div>'
+                f'<div style="font-size:12px; color:{cor_header}; opacity:0.8; margin-top:4px;">+ {d["soltas"]} gf soltas</div>'
+                f'</div>'
+                f'</div>'
+            )
+            col.markdown(html, unsafe_allow_html=True)
+
+    if dados_outros:
+        st.write("")
+        cols2 = st.columns(len(dados_outros))
+        for col, (rotulo, valor) in zip(cols2, dados_outros.items()):
+            html2 = (
+                f'<div style="background:#3A3A38; border-radius:10px; padding:11px 10px; text-align:center;">'
+                f'<div style="font-size:11px; color:#D8D6CE; font-weight:600; text-transform:uppercase; letter-spacing:0.4px;">{rotulo}</div>'
+                f'<div style="font-size:21px; font-weight:800; color:white; margin-top:3px;">{valor} <span style="font-size:12px; font-weight:600;">un</span></div>'
+                f'</div>'
+            )
+            col.markdown(html2, unsafe_allow_html=True)
+
+
 def _chave_cor_status(status: str) -> str:
     """Resolve a chave de CORES_RESUMO a partir do emoji presente no texto de status —
     mesma lógica de cor_linha_status(), mas devolvendo a chave em vez do CSS pronto."""
@@ -947,11 +999,29 @@ with aba_conciliacao_sede:
                         lambda r: formata_qtd_fisica(r["P Vazia"], r["Tipo"], r["Familia"]), axis=1
                     )
 
-                    st.caption(f"Baseado na Saída dos mapas de {data_previsao_str} — quanto de cada item deveria estar de volta no armazém.")
-                    st.dataframe(
-                        previsao_agg[["AG", "Previsão de Retorno"]].sort_values("AG").rename(columns={"AG": "Item"}),
-                        use_container_width=True, hide_index=True,
-                    )
+                    # Monta os dados pro visual "farol": famílias de garrafa (300/600/
+                    # Verde/Litrão) viram caixas+soltas; tudo mais (garrafeira, pallet,
+                    # chapatex, barril) vira um card escuro só com a unidade.
+                    dados_familia_farol: dict[str, dict[str, int]] = {}
+                    dados_outros_farol: dict[str, int] = {}
+                    for _, r in previsao_agg.iterrows():
+                        fam, tipo, qtd, ag_label = r["Familia"], r["Tipo"], int(r["P Vazia"]), r["AG"]
+                        if tipo == "Garrafa" and fam in REGRAS_VAZIO:
+                            fator = int(fator_conversao_caixas(fam))
+                            acc = dados_familia_farol.setdefault(fam, {"caixas": 0, "soltas": 0})
+                            acc["caixas"] += qtd // fator
+                            acc["soltas"] += qtd % fator
+                        else:
+                            dados_outros_farol[ag_label] = dados_outros_farol.get(ag_label, 0) + qtd
+
+                    st.caption(f"Baseado na Saída dos mapas de {data_previsao_str} — quanto deveria estar de volta no armazém.")
+                    renderizar_farol_previsao(dados_familia_farol, dados_outros_farol)
+
+                    with st.expander("📄 Ver detalhado por item"):
+                        st.dataframe(
+                            previsao_agg[["AG", "Previsão de Retorno"]].sort_values("AG").rename(columns={"AG": "Item"}),
+                            use_container_width=True, hide_index=True,
+                        )
 
     st.divider()
 
