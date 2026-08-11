@@ -5,6 +5,7 @@ from datetime import date
 from comum import (
     ARQUIVO_DE_MATERIAL,
     ARQUIVO_MAPAS_AG,
+    PASTA_PROJETO,
     carregar,
     ler_aba_historico,
     salvar_aba_historico,
@@ -23,6 +24,11 @@ from comum import (
     familia_tipo_por_codigo,
     CATEGORIAS_AG_EXTRA,
 )
+
+# Planilha de referência Data+Mapa->PA (colunas DATA, MAPA, PONTO DE APOIO). Sobe na
+# mesma pasta do Drive sempre com o nome "CONC.csv" — carregar() busca por esse
+# prefixo, igual aos outros arquivos (De Material, 03.07.13).
+ARQUIVO_MAPA_PA = PASTA_PROJETO / "CONC.csv"
 
 st.set_page_config(page_title="Conciliação de Mapas (AG)", layout="wide")
 st.title("⚖️ Conciliação de Mapas (AG)")
@@ -215,6 +221,42 @@ if df_de_material is not None and "Promax" in df_de_material.columns:
     df_de_material["Promax"] = normalizar_codigo(df_de_material["Promax"])
 lookup_ag = montar_lookup_ag_por_codigo(df_de_material) if df_de_material is not None else {}
 
+# --- Mapa PA: diz de qual PA é cada mapa numa data — alimenta a busca automática de
+# mapas na Conferência em Lote, pra o conferente não precisar digitar número nenhum.
+df_mapa_pa = carregar(ARQUIVO_MAPA_PA)
+if df_mapa_pa is not None:
+    df_mapa_pa = df_mapa_pa.copy()
+    df_mapa_pa.columns = df_mapa_pa.columns.str.strip()
+    _renomear_mapa_pa = {}
+    for _col in df_mapa_pa.columns:
+        _col_upper = _col.strip().upper()
+        if _col_upper == "DATA":
+            _renomear_mapa_pa[_col] = "Data"
+        elif _col_upper == "MAPA":
+            _renomear_mapa_pa[_col] = "Mapa"
+        elif _col_upper in ("PONTO DE APOIO", "PA"):
+            _renomear_mapa_pa[_col] = "PA"
+    df_mapa_pa = df_mapa_pa.rename(columns=_renomear_mapa_pa)
+
+    if "Mapa" in df_mapa_pa.columns:
+        df_mapa_pa["Mapa"] = df_mapa_pa["Mapa"].apply(limpa_mapa)
+    if "Data" in df_mapa_pa.columns:
+        _dt_mapa_pa = pd.to_datetime(df_mapa_pa["Data"], dayfirst=True, errors="coerce")
+        df_mapa_pa["Data"] = _dt_mapa_pa.dt.strftime("%d/%m/%Y")
+    if "PA" in df_mapa_pa.columns:
+        df_mapa_pa["PA"] = df_mapa_pa["PA"].astype(str).str.strip()
+
+
+def buscar_mapas_por_data_pa(data_alvo, pa_alvo: str) -> list[str]:
+    """Consulta df_mapa_pa e devolve os números de mapa cadastrados pra essa Data+PA —
+    é isso que substitui o campo de digitação manual na Conferência em Lote."""
+    if df_mapa_pa is None or df_mapa_pa.empty or "Data" not in df_mapa_pa.columns or "PA" not in df_mapa_pa.columns:
+        return []
+    data_str = data_alvo.strftime("%d/%m/%Y")
+    sub = df_mapa_pa[(df_mapa_pa["Data"] == data_str) & (df_mapa_pa["PA"].str.upper() == pa_alvo.upper())]
+    return sorted(sub["Mapa"].dropna().unique().tolist(), key=lambda m: int(m) if str(m).isdigit() else 0)
+
+
 # --- 03.07.13: carrega e filtra pelo período escolhido, sem gravar nada no Drive ---
 df_mapas_ag = carregar(ARQUIVO_MAPAS_AG)
 if df_mapas_ag is not None:
@@ -364,20 +406,25 @@ with aba_vazio_pa:
     st.markdown("### 📦 Conferência em Lote (vários mapas conferidos juntos)")
     st.caption(
         "Use quando o PA confere um monte de mapas de uma vez e só sabe o TOTAL (não dá "
-        "pra separar por mapa). O sistema soma a Saída de todos os mapas informados e "
-        "compara com esse total único — o resultado (Bateu/Faltou/Sobrou) vale pro LOTE "
-        "inteiro, sem apontar qual mapa específico está com problema."
+        "pra separar por mapa). Escolha a Data e o PA — os mapas são encontrados "
+        "automaticamente na planilha 'Mapa PA', sem precisar digitar número nenhum. O "
+        "sistema soma a Saída de todos esses mapas e compara com o total que você "
+        "digitar — o resultado (Bateu/Faltou/Sobrou) vale pro LOTE inteiro."
     )
 
-    with st.form("form_vazio_pa_lote", clear_on_submit=True):
-        col_data_l, col_pa_l, col_mapas_l = st.columns([1, 1, 2])
-        data_lote = col_data_l.date_input("Data da Descarga", value=date.today(), key="data_lote")
-        pa_lote = col_pa_l.selectbox("PA", ["Tianguá", "Granja"], key="pa_lote")
-        mapas_texto_lote = col_mapas_l.text_input(
-            "Números dos Mapas do lote (separados por vírgula)",
-            placeholder="ex: 257379, 257386, 257402",
-        )
+    col_data_l, col_pa_l = st.columns(2)
+    data_lote = col_data_l.date_input("Data da Descarga", value=date.today(), key="data_lote")
+    pa_lote = col_pa_l.selectbox("PA", ["Tianguá", "Granja"], key="pa_lote")
 
+    mapas_lote_auto = buscar_mapas_por_data_pa(data_lote, pa_lote)
+    if df_mapa_pa is None:
+        st.error(f"Não encontrei '{ARQUIVO_MAPA_PA.name}' no Google Drive — sem essa planilha não dá pra buscar os mapas automaticamente.")
+    elif mapas_lote_auto:
+        st.success(f"{len(mapas_lote_auto)} mapa(s) de {pa_lote} em {data_lote.strftime('%d/%m/%Y')}: {', '.join(mapas_lote_auto)}")
+    else:
+        st.warning(f"Nenhum mapa cadastrado pra {pa_lote} em {data_lote.strftime('%d/%m/%Y')} na planilha 'Mapa PA'.")
+
+    with st.form("form_vazio_pa_lote", clear_on_submit=True):
         st.markdown("**Caixas Físicas que Retornaram (TOTAL do lote)**")
         valores_familia_lote = {
             fam: st.number_input(rotulo_familia_vazio(fam), min_value=0, step=1, key=f"cx_lote_{fam}")
@@ -393,11 +440,10 @@ with aba_vazio_pa:
         barril50_lote = cl5.number_input("Barril 50L", min_value=0, step=1, key="outros_lote_barril50")
 
         if st.form_submit_button("Salvar conferência em lote"):
-            mapas_limpos = sorted(set(limpa_mapa(m) for m in mapas_texto_lote.split(",") if m.strip()))
-            if len(mapas_limpos) < 2:
-                st.error("Informe pelo menos 2 mapas separados por vírgula — pra 1 mapa só, use o formulário individual acima.")
+            if len(mapas_lote_auto) < 2:
+                st.error("Não há pelo menos 2 mapas cadastrados pra essa Data/PA na planilha 'Mapa PA' — confira se ela está atualizada.")
             else:
-                mapas_chave = ";".join(mapas_limpos)
+                mapas_chave = ";".join(mapas_lote_auto)
                 data_str_lote = data_lote.strftime("%d/%m/%Y")
                 gf_600_lote = valores_familia_lote.get("600ml", 0) + valores_familia_lote.get("Verde 600", 0)
                 linhas_lote = []
@@ -423,7 +469,7 @@ with aba_vazio_pa:
 
                 if linhas_lote:
                     acumular_historico(pd.DataFrame(linhas_lote), "VazioPALote", ["Data", "PA", "Mapas", "Familia"])
-                    st.success(f"✅ Lote de {len(mapas_limpos)} mapas ({', '.join(mapas_limpos)}) salvo com sucesso!")
+                    st.success(f"✅ Lote de {len(mapas_lote_auto)} mapas ({', '.join(mapas_lote_auto)}) salvo com sucesso!")
                 else:
                     st.warning("Nenhuma quantidade foi informada para salvar.")
 
