@@ -36,7 +36,8 @@ REGRAS_VAZIO = {
 }
 
 # Mesma paleta usada em cor_linha_status — cada status vira o fundo pastel e o emoji
-# gigante do "cartão de resultado" nos resumos "pra enviar".
+# gigante do "cartão de resultado" nos resumos "pra enviar", e também alimenta a
+# tabela "estilo limpo" (pill de status) usada nos blocos de detalhe.
 CORES_RESUMO = {
     "verde": ("#EAF3DE", "#173404"),
     "vermelho": ("#FCEBEB", "#501313"),
@@ -57,30 +58,125 @@ def renderizar_cards_resumo(itens: list[tuple[str, int, str]] | list[tuple[str, 
     """itens: lista de (rotulo, valor, cor) ou (rotulo, valor, cor, detalhes) — cor é uma
     chave de CORES_RESUMO. detalhes (opcional) é uma lista de linhas curtas mostradas
     dentro do card quando valor > 0 (ex: qual mapa/item está causando aquele número).
-    Visual "cartão de resultado": emoji gigante, número enorme, fundo pastel colorido."""
+    Visual compacto: badge inline (ícone+número+rótulo numa linha só), detalhes como
+    texto pequeno logo abaixo, sem cartão gigante."""
     colunas = st.columns(len(itens))
     for col, item in zip(colunas, itens):
         rotulo, valor, cor = item[0], item[1], item[2]
         detalhes = item[3] if len(item) > 3 else None
         bg, fg = CORES_RESUMO[cor]
         icone = ICONES_RESUMO.get(cor, "•")
+
         linhas_html = ""
         if detalhes:
             linhas_html = "".join(
-                f'<div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; '
-                f'border-top:1px solid {fg}22; font-size:12.5px; color:{fg};">'
-                f'<span>{d}</span></div>'
-                for d in detalhes
+                f'<div style="font-size:11px; color:{fg}; opacity:0.85; padding:2px 0; '
+                f'border-top:1px solid {fg}18; margin-top:4px;">{d}</div>'
+                for d in detalhes[:5]
             )
+            if len(detalhes) > 5:
+                linhas_html += (
+                    f'<div style="font-size:10.5px; color:{fg}; opacity:0.6; margin-top:2px;">'
+                    f'+{len(detalhes) - 5} outro(s)…</div>'
+                )
+
         html_card = (
-            f'<div style="background-color:{bg}; border-radius:16px; padding:18px 14px; text-align:center;">'
-            f'<div style="font-size:2.6em; line-height:1;">{icone}</div>'
-            f'<div style="font-size:40px; font-weight:800; color:{fg}; line-height:1.1; margin-top:2px;">{valor}</div>'
-            f'<div style="font-size:13px; color:{fg}; opacity:0.75; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; margin-top:2px;">{rotulo}</div>'
+            f'<div style="background-color:{bg}; border-radius:10px; padding:8px 10px;">'
+            f'<div style="display:flex; align-items:center; gap:6px;">'
+            f'<span style="font-size:1.3em; line-height:1;">{icone}</span>'
+            f'<span style="font-size:22px; font-weight:800; color:{fg}; line-height:1;">{valor}</span>'
+            f'<span style="font-size:11px; color:{fg}; opacity:0.75; font-weight:600; '
+            f'text-transform:uppercase; letter-spacing:0.3px;">{rotulo}</span>'
+            f'</div>'
             f'{linhas_html}'
             f'</div>'
         )
         col.markdown(html_card, unsafe_allow_html=True)
+
+
+def _chave_cor_status(status: str) -> str:
+    """Resolve a chave de CORES_RESUMO a partir do emoji presente no texto de status —
+    mesma lógica de cor_linha_status(), mas devolvendo a chave em vez do CSS pronto."""
+    s = str(status)
+    if "✅" in s: return "verde"
+    if "❌" in s: return "vermelho"
+    if "⚠️" in s: return "amarelo"
+    if "🔎" in s: return "azul"
+    if "⏳" in s: return "cinza"
+    return "cinza"
+
+
+def _pill_status(status: str) -> str:
+    """Status como pill arredondado (fundo pastel, texto curto) em vez de célula/linha
+    inteira colorida — usado por renderizar_tabela_limpa()."""
+    cor_key = _chave_cor_status(status)
+    bg, fg = CORES_RESUMO[cor_key]
+    rotulo = str(status)
+    for emoji in ("✅", "❌", "⚠️", "🔎", "⏳"):
+        rotulo = rotulo.replace(emoji, "")
+    rotulo = rotulo.strip()
+    return (
+        f'<span style="background:{bg}; color:{fg}; font-size:11.5px; font-weight:600; '
+        f'padding:3px 11px; border-radius:999px; white-space:nowrap; display:inline-block;">− {rotulo}</span>'
+    )
+
+
+def _cor_diferenca(texto) -> str:
+    """Verde pra entrada/sobra (+), vermelho pra falta (-) — aplicado só na coluna Diferença."""
+    t = str(texto).strip()
+    if t.startswith("+"): return "#0F6E56"
+    if t.startswith("-"): return "#A32D2D"
+    return "#888780"
+
+
+def renderizar_tabela_limpa(df: pd.DataFrame, colunas: list[str], col_status: str = "Status") -> None:
+    """Tabela HTML em estilo 'planilha limpa': cabeçalho discreto em cinza, linhas finas
+    separadas por hairline, primeira coluna alinhada à esquerda e as demais à direita,
+    coluna Diferença colorida por sinal, e Status como pill em vez de linha/célula
+    inteira pintada. Substitui st.dataframe(...).style.map(cor_linha_status) nos blocos
+    de 'itens com diferença' das abas de conciliação."""
+    if df.empty:
+        st.caption("Nenhum registro.")
+        return
+
+    cols_dado = [c for c in colunas if c != col_status]
+
+    cabecalho = "".join(
+        f'<th style="padding:0 12px 8px; text-align:{"left" if i == 0 else "right"}; '
+        f'font-size:11.5px; color:#888780; font-weight:600; white-space:nowrap;">{c}</th>'
+        for i, c in enumerate(cols_dado)
+    )
+    if col_status in colunas:
+        cabecalho += (
+            '<th style="padding:0 12px 8px; text-align:right; font-size:11.5px; '
+            'color:#888780; font-weight:600;">Status</th>'
+        )
+
+    linhas_html = []
+    for _, row in df.iterrows():
+        celulas = []
+        for i, col in enumerate(cols_dado):
+            val = row[col]
+            alinhado = "left" if i == 0 else "right"
+            cor = _cor_diferenca(val) if col == "Diferença" else "inherit"
+            peso = "600" if col == "Diferença" else "400"
+            celulas.append(
+                f'<td style="padding:10px 12px; text-align:{alinhado}; font-size:13px; '
+                f'color:{cor}; font-weight:{peso}; white-space:nowrap;">{val}</td>'
+            )
+        if col_status in colunas:
+            celulas.append(f'<td style="padding:10px 12px; text-align:right;">{_pill_status(row[col_status])}</td>')
+        linhas_html.append(f'<tr style="border-top:1px solid #E9ECEF;">{"".join(celulas)}</tr>')
+
+    html_tabela = (
+        '<div style="overflow-x:auto;">'
+        '<table style="width:100%; border-collapse:collapse;">'
+        f'<thead><tr>{cabecalho}</tr></thead>'
+        f'<tbody>{"".join(linhas_html)}</tbody>'
+        '</table>'
+        '</div>'
+    )
+    st.markdown(html_tabela, unsafe_allow_html=True)
 
 
 def status_por_mapa(df: pd.DataFrame, ordem_prioridade: list[str]) -> pd.Series:
@@ -535,16 +631,10 @@ with aba_conciliacao:
         else:
             st.markdown("**Itens com diferença:**")
             colunas_resumo_prob = ["Mapa"] + (["Data"] if tem_data_vazio_pa else []) + ["PA", "Familia", "Diferença", "Status"]
-            st.dataframe(
-                itens_problema[colunas_resumo_prob].style.map(cor_linha_status, subset=["Status"]),
-                use_container_width=True, hide_index=True,
-            )
+            renderizar_tabela_limpa(itens_problema[colunas_resumo_prob], colunas_resumo_prob)
 
         with st.expander("📄 Ver tabela completa (todos os itens, inclusive os que bateram)"):
-            st.dataframe(
-                df_display.style.map(cor_linha_status, subset=["Status"]),
-                use_container_width=True, hide_index=True
-            )
+            renderizar_tabela_limpa(df_display, colunas_exibir_pa)
 
         st.caption("Nota 1: Mapas com status 'Faltou AG' saíram no Previsto e não tiveram (ou tiveram menos) retorno digitado na aba 'Vazio por PA'.")
         st.caption("Nota 2: Mapas com status 'Sobrou AG' foram conferidos no PA com quantidade maior do que o Previsto (incluindo casos em que nada saiu, mas algo foi digitado). A diferença é sempre exibida na menor unidade física (garrafas ou unidades soltas).")
@@ -684,16 +774,13 @@ with aba_conciliacao_sede:
             st.success("🎉 Nenhuma diferença — tudo bateu certinho!")
         else:
             st.markdown("**Itens com diferença:**")
-            st.dataframe(
-                itens_problema_sede[["Mapa", "Data", "AG", "Diferença", "Status"]].style.map(cor_linha_status, subset=["Status"]),
-                use_container_width=True, hide_index=True,
+            renderizar_tabela_limpa(
+                itens_problema_sede[["Mapa", "Data", "AG", "Diferença", "Status"]],
+                ["Mapa", "Data", "AG", "Diferença", "Status"],
             )
 
         with st.expander("📄 Ver tabela completa (respeitando os filtros da tela)"):
-            st.dataframe(
-                df_display_sede.style.map(cor_linha_status, subset=["Status"]),
-                use_container_width=True, hide_index=True,
-            )
+            renderizar_tabela_limpa(df_display_sede, colunas_exibir_sede)
 
         st.caption("Nota: Saída/Retorno somam Vazio + Comodato + Devolução + Troca + Consignação + Rec. Consignação. Pra ver em qual espécie está a diferença, use a aba 'Outras Categorias' filtrando pelo mesmo mapa.")
 
@@ -753,6 +840,9 @@ with aba_conciliacao_sede:
 
         if linhas_diverg:
             df_diverg = pd.DataFrame(linhas_diverg).sort_values(["Mapa", "Família", "Fluxo"])
+            # Diferença aqui é numérica (int) — formata com sinal pra ficar no mesmo
+            # padrão colorido (+/-) que renderizar_tabela_limpa espera na coluna Diferença.
+            df_diverg["Diferença"] = df_diverg["Diferença"].apply(lambda d: f"+{d}" if d > 0 else (f"{d}" if d < 0 else "0"))
 
             status_filter_diverg = st.selectbox(
                 "Filtrar por Status:",
@@ -761,9 +851,9 @@ with aba_conciliacao_sede:
             )
             df_diverg_display = df_diverg if status_filter_diverg == "Todos" else df_diverg[df_diverg["Status"] == status_filter_diverg]
 
-            st.dataframe(
-                df_diverg_display.style.map(cor_linha_status, subset=["Status"]),
-                use_container_width=True, hide_index=True,
+            renderizar_tabela_limpa(
+                df_diverg_display,
+                ["Mapa", "Família", "Fluxo", "Garrafas (un)", "Caixas equiv.", "Garrafas soltas", "Garrafeiras", "Diferença", "Status"],
             )
             st.caption(
                 "Diferença > 0 = saiu/retornou garrafeira a mais do que caixas de garrafa fechadas. "
@@ -806,7 +896,8 @@ with aba_categorias_extra:
             df_cat = pd.concat(linhas_cat, ignore_index=True)
             df_cat["Previsto"] = df_cat["Previsto"].round(0).astype(int)
             df_cat["Realizado"] = df_cat["Realizado"].round(0).astype(int)
-            df_cat["Diferença"] = df_cat["Realizado"] - df_cat["Previsto"]
+            df_cat["Diferença_Num"] = df_cat["Realizado"] - df_cat["Previsto"]
+            df_cat["Diferença"] = df_cat["Diferença_Num"].apply(lambda d: f"+{d}" if d > 0 else (f"{d}" if d < 0 else "0"))
 
             if col_desc_cat:
                 desc_lookup_cat = df_mapas_ag.drop_duplicates(subset=["Material"]).set_index("Material")[col_desc_cat].to_dict()
@@ -815,9 +906,9 @@ with aba_categorias_extra:
                 df_cat["AG"] = df_cat["Material"]
 
             def status_categoria(row):
-                if row["Diferença"] == 0:
+                if row["Diferença_Num"] == 0:
                     return "✅ Bateu"
-                elif row["Diferença"] < 0:
+                elif row["Diferença_Num"] < 0:
                     return "❌ Faltou"
                 else:
                     return "⚠️ Sobrou"
@@ -839,9 +930,9 @@ with aba_categorias_extra:
 
             df_cat_display = df_cat_display[["Mapa", "AG", "Categoria", "Previsto", "Realizado", "Diferença", "Status"]].sort_values(["Mapa", "Categoria"])
 
-            st.dataframe(
-                df_cat_display.style.map(cor_linha_status, subset=["Status"]),
-                use_container_width=True, hide_index=True,
+            renderizar_tabela_limpa(
+                df_cat_display,
+                ["Mapa", "AG", "Categoria", "Previsto", "Realizado", "Diferença", "Status"],
             )
 
             st.caption("Cada linha é um Mapa+Item+Categoria com movimento previsto e/ou realizado — itens com Previsto=Realizado=0 nessa categoria não aparecem aqui.")
