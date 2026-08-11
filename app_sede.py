@@ -317,9 +317,18 @@ if df_mapa_pa is not None:
     if "PA" in df_mapa_pa.columns:
         df_mapa_pa["PA"] = df_mapa_pa["PA"].astype(str).str.strip()
     if "MapaConsolidado" in df_mapa_pa.columns:
-        df_mapa_pa["MapaConsolidado"] = df_mapa_pa["MapaConsolidado"].apply(
-            lambda v: limpa_mapa(v) if str(v).strip() not in ("", "nan", "0") else ""
-        )
+        def _limpar_mapa_consolidado(v) -> str:
+            """Igual limpa_mapa(), mas trata o caso de vir como float (ex: 257690.0)
+            — acontece quando a coluna tem células vazias misturadas com números,
+            o que faz o pandas/Excel guardar tudo como decimal."""
+            s = str(v).strip()
+            if s.lower() in ("", "nan", "none", "0"):
+                return ""
+            try:
+                return str(int(float(s)))
+            except Exception:
+                return s
+        df_mapa_pa["MapaConsolidado"] = df_mapa_pa["MapaConsolidado"].apply(_limpar_mapa_consolidado)
         for _, _linha in df_mapa_pa.iterrows():
             if _linha["MapaConsolidado"] and _linha["MapaConsolidado"] != _linha["Mapa"]:
                 MAPA_CONSOLIDADO_LOOKUP[_linha["Mapa"]] = _linha["MapaConsolidado"]
