@@ -1298,13 +1298,38 @@ with aba_conciliacao_sede:
         sem_saida_sede = int((status_mapas_sede == "🔎 Sem Saída").sum())
         aguardando_sede = int((status_mapas_sede == "⏳ Aguardando Retorno").sum())
 
+        # Linhas de detalhe (Mapa · AG · Diferença) dentro dos cards — mesmo padrão
+        # visual da aba Conciliação Mapas PA (badge de local + cards com detalhe).
+        itens_visiveis_sede = df_concil_sede[df_concil_sede["Status"] != "✅ Bateu"]
+        detalhes_faltou_sede = [
+            f"Mapa {r['Mapa']} · {r['AG']} · {r['Diferença']}"
+            for _, r in itens_visiveis_sede[itens_visiveis_sede["Status"] == "❌ Faltou (não retornou)"].iterrows()
+        ]
+        detalhes_sobrou_sede = [
+            f"Mapa {r['Mapa']} · {r['AG']} · {r['Diferença']}"
+            for _, r in itens_visiveis_sede[itens_visiveis_sede["Status"] == "⚠️ Sobrou no Retorno"].iterrows()
+        ]
+        detalhes_sem_saida_sede = [
+            f"Mapa {r['Mapa']} · {r['AG']}"
+            for _, r in itens_visiveis_sede[itens_visiveis_sede["Status"] == "🔎 Sem Saída"].iterrows()
+        ]
+        detalhes_aguardando_sede = [
+            f"Mapa {r['Mapa']} · {r['AG']}"
+            for _, r in itens_visiveis_sede[itens_visiveis_sede["Status"] == "⏳ Aguardando Retorno"].iterrows()
+        ]
+
+        st.markdown(
+            """<div style="display:inline-block; background-color:#e2e6ea; color:#212529; font-weight:700; font-size:15px; padding:6px 16px; border-radius:20px; margin-bottom:10px;">📍 Sede</div>""",
+            unsafe_allow_html=True,
+        )
         renderizar_cards_resumo([
-            ("Bateram", bateu_sede, "verde"),
-            ("Faltou", faltou_sede, "vermelho"),
-            ("Sobrou", sobrou_sede, "amarelo"),
-            ("Sem Saída", sem_saida_sede, "azul"),
-            ("Aguardando", aguardando_sede, "cinza"),
+            ("Bateram", bateu_sede, "verde", None),
+            ("Faltou", faltou_sede, "vermelho", detalhes_faltou_sede),
+            ("Sobrou", sobrou_sede, "amarelo", detalhes_sobrou_sede),
+            ("Sem Saída", sem_saida_sede, "azul", detalhes_sem_saida_sede),
+            ("Aguardando", aguardando_sede, "cinza", detalhes_aguardando_sede),
         ])
+        st.write("")
 
         itens_problema_sede = df_concil_sede[df_concil_sede["Status"] != "✅ Bateu"]
         if itens_problema_sede.empty:
