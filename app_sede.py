@@ -1461,6 +1461,14 @@ with aba_fechamento:
     st.header("📊 Fechamento da Conciliação")
     st.caption("Visão única PA + Sede — Top Faltas/Sobras, justificativas e variação diária.")
 
+    data_fechamento = st.date_input(
+        "Data de referência do fechamento",
+        value=date.today() - timedelta(days=1),
+        key="data_fechamento_ref",
+        help="O dia que está sendo fechado — normalmente ontem, já que hoje de manhã você confere o que saiu no dia anterior.",
+    )
+    data_fechamento_str = data_fechamento.strftime("%d/%m/%Y")
+
     # --- Unifica PA (por Família) e Sede (por Item/AG) numa tabela só de diferenças ---
     partes_fechamento = []
     if not df_concil.empty and "Diferença_Unidades" in df_concil.columns:
@@ -1475,13 +1483,17 @@ with aba_fechamento:
         sede_unif["Origem"] = "Sede"
         partes_fechamento.append(sede_unif)
 
-    df_fechamento = pd.concat(partes_fechamento, ignore_index=True) if partes_fechamento else pd.DataFrame(columns=["Mapa", "Item", "Diferença", "Data", "Origem"])
+    # df_fechamento_todas_datas alimenta o Mapa de Calor (precisa ver vários dias pra
+    # mostrar variação); df_fechamento (filtrado pela data escolhida) alimenta o Top
+    # Faltas/Sobras e as Justificativas — que são sempre sobre UM fechamento específico.
+    df_fechamento_todas_datas = pd.concat(partes_fechamento, ignore_index=True) if partes_fechamento else pd.DataFrame(columns=["Mapa", "Item", "Diferença", "Data", "Origem"])
+    df_fechamento = df_fechamento_todas_datas[df_fechamento_todas_datas["Data"] == data_fechamento_str].copy()
 
     if df_fechamento.empty:
-        st.success("🎉 Nenhuma diferença registrada — nada pra fechar hoje.")
+        st.info(f"Nenhuma diferença registrada em {data_fechamento_str} — nada pra fechar nesse dia.")
     else:
         # ================= TOP 10 FALTAS / TOP 10 SOBRAS (por quantidade) =================
-        st.markdown("### 🔻🔺 Top 10 Faltas e Sobras (por quantidade)")
+        st.markdown(f"### 🔻🔺 Top 10 Faltas e Sobras — {data_fechamento_str}")
         totais_item = df_fechamento.groupby("Item")["Diferença"].sum().reset_index()
 
         top_faltas = totais_item[totais_item["Diferença"] < 0].sort_values("Diferença").head(10)
@@ -1550,15 +1562,15 @@ with aba_fechamento:
         # ================= MAPA DE CALOR (variação diária dos itens mais voláteis) =================
         st.divider()
         st.markdown("### 🌡️ Mapa de Calor — variação diária")
-        st.caption("Diferença (Faltou/Sobrou) por item e por dia — os itens com mais impacto no período aparecem primeiro.")
+        st.caption("Diferença (Faltou/Sobrou) por item e por dia, em todo o histórico disponível — a data do fechamento acima fica destacada.")
 
-        if df_fechamento["Data"].nunique() < 2:
+        if df_fechamento_todas_datas["Data"].nunique() < 2:
             st.caption("Precisa de pelo menos 2 dias com diferença registrada pra montar o mapa de calor.")
         else:
-            impacto_item = df_fechamento.groupby("Item")["Diferença"].apply(lambda s: s.abs().sum()).sort_values(ascending=False)
+            impacto_item = df_fechamento_todas_datas.groupby("Item")["Diferença"].apply(lambda s: s.abs().sum()).sort_values(ascending=False)
             itens_top_calor = impacto_item.head(10).index.tolist()
 
-            pivot = df_fechamento[df_fechamento["Item"].isin(itens_top_calor)].pivot_table(
+            pivot = df_fechamento_todas_datas[df_fechamento_todas_datas["Item"].isin(itens_top_calor)].pivot_table(
                 index="Item", columns="Data", values="Diferença", aggfunc="sum", fill_value=0
             )
             datas_ordenadas = sorted(pivot.columns, key=lambda d: pd.to_datetime(d, dayfirst=True, errors="coerce"))
@@ -1575,7 +1587,9 @@ with aba_fechamento:
                 return "#F2F2F0", "#888780"
 
             cabecalho_calor = "".join(
-                f'<th style="padding:6px 10px; font-size:11.5px; color:#888780; font-weight:600; text-align:center;">{d}</th>'
+                f'<th style="padding:6px 10px; font-size:11.5px; color:#888780; font-weight:600; text-align:center;'
+                + ("border-bottom:2px solid #185FA5;" if d == data_fechamento_str else "")
+                + f'">{d}</th>'
                 for d in datas_ordenadas
             )
             linhas_calor = []
@@ -1584,8 +1598,9 @@ with aba_fechamento:
                 for d in datas_ordenadas:
                     v = pivot.loc[item_nome, d] if item_nome in pivot.index and d in pivot.columns else 0
                     bg, fg = _cor_celula(v)
+                    borda = "box-shadow: inset 0 0 0 2px #185FA5;" if d == data_fechamento_str else ""
                     texto_v = f"+{int(v)}" if v > 0 else (f"{int(v)}" if v < 0 else "·")
-                    celulas += f'<td style="padding:8px 10px; text-align:center; background:{bg}; color:{fg}; font-weight:600; font-size:12.5px;">{texto_v}</td>'
+                    celulas += f'<td style="padding:8px 10px; text-align:center; background:{bg}; color:{fg}; font-weight:600; font-size:12.5px; {borda}">{texto_v}</td>'
                 linhas_calor.append(f"<tr>{celulas}</tr>")
 
             html_calor = (
