@@ -858,6 +858,63 @@ with aba_vazio_pa:
                 st.rerun()
 
     st.divider()
+    with st.expander("☑️ Checklist de mapas lançados", expanded=False):
+        st.caption("Marca sozinho quem já tem retorno digitado (individual ou lote) — os demais você marca manualmente conforme for conferindo.")
+        col_chk1, col_chk2 = st.columns(2)
+        data_checklist = col_chk1.date_input("Data", value=date.today(), key="data_checklist")
+        pa_checklist = col_chk2.selectbox("PA", ["Tianguá", "Granja", "Sede"], key="pa_checklist")
+
+        data_checklist_str = data_checklist.strftime("%d/%m/%Y")
+        mapas_checklist = []
+        if df_mapa_pa is not None and not df_mapa_pa.empty:
+            pa_norm_alvo_chk = _PA_NORMALIZADO.get(pa_checklist.strip().upper(), pa_checklist).upper()
+            pa_bate_chk = df_mapa_pa["PA"].apply(lambda v: _PA_NORMALIZADO.get(str(v).strip().upper(), v).upper() == pa_norm_alvo_chk)
+            mapas_checklist = sorted(
+                df_mapa_pa[(df_mapa_pa["Data"] == data_checklist_str) & pa_bate_chk]["Mapa"].dropna().unique().tolist(),
+                key=lambda m: int(m) if str(m).isdigit() else 0,
+            )
+
+        if not mapas_checklist:
+            st.info(f"Nenhum mapa cadastrado pra {pa_checklist} em {data_checklist_str} no CONC.csv.")
+        else:
+            MAPAS_JA_LANCADOS = MAPAS_INDIVIDUAIS | MAPAS_EM_LOTE
+            df_checklist_hist = ler_aba_historico("MapaChecklist")
+            checklist_manual = set()
+            if not df_checklist_hist.empty and "Data" in df_checklist_hist.columns:
+                checklist_manual = set(df_checklist_hist[df_checklist_hist["Data"] == data_checklist_str]["Mapa"].astype(str))
+
+            estados_novos = {}
+            cols_chk = st.columns(4)
+            for i, mapa_c in enumerate(mapas_checklist):
+                marcado_auto = mapa_c in MAPAS_JA_LANCADOS
+                valor_inicial = marcado_auto or (mapa_c in checklist_manual)
+                col = cols_chk[i % 4]
+                estados_novos[mapa_c] = col.checkbox(
+                    mapa_c, value=valor_inicial, key=f"chk_mapa_{data_checklist_str}_{pa_checklist}_{mapa_c}",
+                    disabled=marcado_auto,
+                    help="Já tem retorno lançado" if marcado_auto else "Marcação manual — só pra acompanhamento",
+                )
+
+            qtd_marcados = sum(estados_novos.values())
+            st.caption(f"{qtd_marcados} de {len(mapas_checklist)} mapa(s) marcados.")
+
+            if st.button("💾 Salvar checklist", key="salvar_checklist"):
+                linhas_checklist = [
+                    {"Data": data_checklist_str, "PA": pa_checklist, "Mapa": m, "Checado": 1}
+                    for m, marcado in estados_novos.items() if marcado and m not in MAPAS_JA_LANCADOS
+                ]
+                if linhas_checklist:
+                    acumular_historico(pd.DataFrame(linhas_checklist), "MapaChecklist", ["Data", "Mapa"])
+                desmarcados = [m for m, marcado in estados_novos.items() if not marcado and m in checklist_manual]
+                if desmarcados and not df_checklist_hist.empty:
+                    df_checklist_restante = df_checklist_hist[
+                        ~((df_checklist_hist["Data"] == data_checklist_str) & (df_checklist_hist["Mapa"].astype(str).isin(desmarcados)))
+                    ]
+                    salvar_aba_historico("MapaChecklist", df_checklist_restante)
+                st.success("Checklist salvo.")
+                st.rerun()
+
+    st.divider()
     with st.expander("🧪 Modo Simulação (dados de teste)", expanded=False):
         st.caption("Gera retorno = saída perfeita pra todos os mapas Tianguá/Granja de uma data (via CONC.csv). Grava numa aba separada, nunca mistura com produção.")
         data_simulacao = st.date_input("Data pra simular", value=date.today() - timedelta(days=1), key="data_gerar_simulacao")
