@@ -794,6 +794,52 @@ with aba_vazio_pa:
             width='stretch', hide_index=True,
         )
 
+        with st.expander("✏️ Editar um item do lote (sem apagar o lote inteiro)", expanded=False):
+            cel1, cel2 = st.columns(2)
+            datas_lote_edit = sorted(df_vazio_lote["Data"].unique(), key=lambda d: pd.to_datetime(d, dayfirst=True), reverse=True)
+            edit_data_lote = cel1.selectbox("Data", datas_lote_edit, key="edit_data_lote")
+
+            lotes_na_data_edit = sorted(df_vazio_lote[df_vazio_lote["Data"] == edit_data_lote]["Mapas"].unique())
+            edit_lote_chave = cel2.selectbox(
+                "Lote", lotes_na_data_edit, format_func=lambda m: ", ".join(mapas_da_lote(m)), key="edit_lote_chave"
+            )
+
+            df_lote_editar = df_vazio_lote[(df_vazio_lote["Data"] == edit_data_lote) & (df_vazio_lote["Mapas"] == edit_lote_chave)]
+
+            if df_lote_editar.empty:
+                st.info("Nenhum item encontrado pra esse lote/data.")
+            else:
+                TODAS_FAMILIAS_LOTE = list(REGRAS_VAZIO.keys()) + ["Chapatex", "Pallet PBR1", "Pallet PBR2", "Barril 30L", "Barril 50L"]
+                familias_ja_no_lote = set(df_lote_editar["Familia"].unique())
+                familias_disp_lote = sorted(TODAS_FAMILIAS_LOTE, key=lambda f: (f not in familias_ja_no_lote, f))
+                edit_familia_lote = st.selectbox("Item (Família) para editar ou adicionar", familias_disp_lote, key="edit_familia_lote")
+
+                linhas_familia_lote = df_lote_editar[df_lote_editar["Familia"] == edit_familia_lote]
+                pa_padrao_lote = df_lote_editar["PA"].iloc[0]
+                if not linhas_familia_lote.empty:
+                    linha_atual_lote = linhas_familia_lote.iloc[0]
+                    pa_atual_lote = linha_atual_lote["PA"]
+                    st.caption(f"Lote {', '.join(mapas_da_lote(edit_lote_chave))} · {pa_atual_lote} · {edit_data_lote} · {edit_familia_lote}")
+                else:
+                    linha_atual_lote = {}
+                    pa_atual_lote = pa_padrao_lote
+                    st.caption(f"Novo: Lote {', '.join(mapas_da_lote(edit_lote_chave))} · {pa_atual_lote} · {edit_data_lote} · {edit_familia_lote}")
+
+                cel3, cel4, cel5, cel6 = st.columns(4)
+                novo_caixas_lote = cel3.number_input("Caixas", min_value=0, step=1, value=int(linha_atual_lote.get("Caixas", 0)) if isinstance(linha_atual_lote, pd.Series) else 0, key="edit_caixas_lote")
+                novo_garrafas_lote = cel4.number_input("Garrafas", min_value=0, step=1, value=int(linha_atual_lote.get("Garrafas", 0)) if isinstance(linha_atual_lote, pd.Series) else 0, key="edit_garrafas_lote")
+                novo_garrafeiras_lote = cel5.number_input("Garrafeiras", min_value=0, step=1, value=int(linha_atual_lote.get("Garrafeiras", 0)) if isinstance(linha_atual_lote, pd.Series) else 0, key="edit_garrafeiras_lote")
+                novo_unidades_lote = cel6.number_input("Unidades", min_value=0, step=1, value=int(linha_atual_lote.get("Unidades", 0)) if isinstance(linha_atual_lote, pd.Series) else 0, key="edit_unidades_lote")
+
+                if st.button("💾 Salvar edição do lote", type="primary", key="salvar_edicao_lote"):
+                    nova_linha_lote = pd.DataFrame([{
+                        "Data": edit_data_lote, "PA": pa_atual_lote, "Mapas": edit_lote_chave, "Familia": edit_familia_lote,
+                        "Caixas": novo_caixas_lote, "Garrafas": novo_garrafas_lote, "Garrafeiras": novo_garrafeiras_lote, "Unidades": novo_unidades_lote,
+                    }])
+                    acumular_historico(nova_linha_lote, "VazioPALote", ["Data", "PA", "Mapas", "Familia"])
+                    st.success(f"✅ Item '{edit_familia_lote}' do lote atualizado!")
+                    st.rerun()
+
         with st.expander("🗑️ Apagar um lote", expanded=False):
             cdl1, cdl2, cdl3 = st.columns([1, 2, 1])
             datas_lote_exist = sorted(df_vazio_lote["Data"].unique(), key=lambda d: pd.to_datetime(d, dayfirst=True), reverse=True)
