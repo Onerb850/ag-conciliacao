@@ -1520,34 +1520,72 @@ with aba_fechamento:
     data_fechamento_str = data_fechamento.strftime("%d/%m/%Y")
 
     # --- Unifica PA (por Família) e Sede (por Item/AG) numa tabela só de diferenças ---
+    # PA_Especifica: Tianguá/Granja/Sede (não mais um genérico "PA"/"Sede") — pra saber
+    # ONDE está ocorrendo a falta/sobra. FamiliaConv: usada só pra converter unidades em
+    # caixas (fator certo por família: 23/24/24/12).
     partes_fechamento = []
     if not df_concil.empty and "Diferença_Unidades" in df_concil.columns:
-        pa_unif = df_concil[df_concil["Diferença_Unidades"] != 0][["Mapa", "Familia", "Diferença_Unidades"]].copy()
+        colunas_pa = ["Mapa", "Familia", "Diferença_Unidades"]
+        if "PA" in df_concil.columns:
+            colunas_pa.append("PA")
+        if "Data" in df_concil.columns:
+            colunas_pa.append("Data")
+        pa_unif = df_concil[df_concil["Diferença_Unidades"] != 0][colunas_pa].copy()
         pa_unif = pa_unif.rename(columns={"Familia": "Item", "Diferença_Unidades": "Diferença"})
-        pa_unif["Data"] = df_concil.get("Data", "-")
-        pa_unif["Origem"] = "PA"
+        if "PA" not in pa_unif.columns:
+            pa_unif["PA"] = "Tianguá/Granja"
+        if "Data" not in pa_unif.columns:
+            pa_unif["Data"] = "-"
+        pa_unif["FamiliaConv"] = pa_unif["Item"]
         partes_fechamento.append(pa_unif)
     if not df_concil_sede.empty and "Diferença_Num" in df_concil_sede.columns:
-        sede_unif = df_concil_sede[df_concil_sede["Diferença_Num"] != 0][["Mapa", "AG", "Diferença_Num", "Data"]].copy()
-        sede_unif = sede_unif.rename(columns={"AG": "Item", "Diferença_Num": "Diferença"})
-        sede_unif["Origem"] = "Sede"
+        sede_unif = df_concil_sede[df_concil_sede["Diferença_Num"] != 0][["Mapa", "AG", "Diferença_Num", "Data", "Familia"]].copy()
+        sede_unif = sede_unif.rename(columns={"AG": "Item", "Diferença_Num": "Diferença", "Familia": "FamiliaConv"})
+        sede_unif["PA"] = "Sede"
         partes_fechamento.append(sede_unif)
 
     # df_fechamento_todas_datas alimenta o Mapa de Calor (precisa ver vários dias pra
     # mostrar variação); df_fechamento (filtrado pela data escolhida) alimenta o Top
     # Faltas/Sobras e as Justificativas — que são sempre sobre UM fechamento específico.
-    df_fechamento_todas_datas = pd.concat(partes_fechamento, ignore_index=True) if partes_fechamento else pd.DataFrame(columns=["Mapa", "Item", "Diferença", "Data", "Origem"])
+    df_fechamento_todas_datas = pd.concat(partes_fechamento, ignore_index=True) if partes_fechamento else pd.DataFrame(columns=["Mapa", "Item", "Diferença", "Data", "PA", "FamiliaConv"])
     df_fechamento = df_fechamento_todas_datas[df_fechamento_todas_datas["Data"] == data_fechamento_str].copy()
 
     if df_fechamento.empty:
         st.info(f"Nenhuma diferença registrada em {data_fechamento_str} — nada pra fechar nesse dia.")
     else:
-        # ================= TOP 10 FALTAS / TOP 10 SOBRAS (por quantidade) =================
-        st.markdown(f"### 🔻🔺 Top 10 Faltas e Sobras — {data_fechamento_str}")
-        totais_item = df_fechamento.groupby("Item")["Diferença"].sum().reset_index()
+        FAMILIAS_GARRAFA_FECHAMENTO = ("300ml", "600ml", "Verde 600", "1L")
 
-        top_faltas = totais_item[totais_item["Diferença"] < 0].sort_values("Diferença").head(10)
-        top_sobras = totais_item[totais_item["Diferença"] > 0].sort_values("Diferença", ascending=False).head(10)
+        def formata_diferenca_caixas(diff, familia: str) -> str:
+            """Converte a diferença em unidades pra caixas + soltas — só pras famílias
+            de garrafa de verdade (300ml/600ml/Verde 600/1L), usando o mesmo fator do
+            resto do app (23/24/24/12). Qualquer outro item (garrafeira, pallet,
+            chapatex, barril) fica em unidade simples, sem virar 'caixa' errado."""
+            diff = int(diff)
+            sinal = "+" if diff > 0 else ("-" if diff < 0 else "")
+            abs_diff = abs(diff)
+            if familia not in FAMILIAS_GARRAFA_FECHAMENTO:
+                return f"{sinal}{abs_diff} un" if abs_diff else "0"
+            fator = int(fator_conversao_caixas(familia)) or 1
+            cx, soltas = abs_diff // fator, abs_diff % fator
+            if cx == 0 and soltas == 0:
+                return "0"
+            partes = []
+            if cx > 0: partes.append(f"{cx} cx")
+            if soltas > 0: partes.append(f"{soltas} un")
+            return f"{sinal}{' + '.join(partes)}"
+
+        # ================= TOP 10 FALTAS / TOP 10 SOBRAS (por caixa, com a PA) =================
+        st.markdown(f"### 🔻🔺 Top 10 Faltas e Sobras — {data_fechamento_str}")
+        st.caption("Quantidade em caixas (não em vasilhame solto) — cada linha já mostra em qual PA está ocorrendo.")
+
+        totais_item = df_fechamento.groupby(["Item", "PA", "FamiliaConv"], as_index=False)["Diferença"].sum()
+        totais_item["Qtd (cx)"] = totais_item.apply(lambda r: formata_diferenca_caixas(r["Diferença"], r["FamiliaConv"]), axis=1)
+        totais_item["Diferença_Cx_Num"] = totais_item.apply(
+            lambda r: r["Diferença"] / (fator_conversao_caixas(r["FamiliaConv"]) or 1), axis=1
+        )
+
+        top_faltas = totais_item[totais_item["Diferença"] < 0].sort_values("Diferença_Cx_Num").head(10)
+        top_sobras = totais_item[totais_item["Diferença"] > 0].sort_values("Diferença_Cx_Num", ascending=False).head(10)
 
         col_falta, col_sobra = st.columns(2)
         with col_falta:
@@ -1555,17 +1593,13 @@ with aba_fechamento:
             if top_faltas.empty:
                 st.caption("Nenhuma falta no recorte.")
             else:
-                df_tf = top_faltas.rename(columns={"Diferença": "Qtd"}).copy()
-                df_tf["Qtd"] = df_tf["Qtd"].apply(lambda v: f"{int(v)}")
-                renderizar_tabela_limpa(df_tf[["Item", "Qtd"]], ["Item", "Qtd"], col_status="")
+                renderizar_tabela_limpa(top_faltas[["Item", "PA", "Qtd (cx)"]], ["Item", "PA", "Qtd (cx)"], col_status="")
         with col_sobra:
             st.markdown("**🔺 TOP 10 Sobras**")
             if top_sobras.empty:
                 st.caption("Nenhuma sobra no recorte.")
             else:
-                df_ts = top_sobras.rename(columns={"Diferença": "Qtd"}).copy()
-                df_ts["Qtd"] = df_ts["Qtd"].apply(lambda v: f"+{int(v)}")
-                renderizar_tabela_limpa(df_ts[["Item", "Qtd"]], ["Item", "Qtd"], col_status="")
+                renderizar_tabela_limpa(top_sobras[["Item", "PA", "Qtd (cx)"]], ["Item", "PA", "Qtd (cx)"], col_status="")
 
         # ================= JUSTIFICATIVAS (texto livre por Mapa+Item+Data) =================
         st.divider()
@@ -1582,7 +1616,7 @@ with aba_fechamento:
         )
 
         opcoes_justif = [
-            f"{r['Mapa']} · {r['Item']} · {r['Diferença']:+.0f} ({r['Data']})"
+            f"{r['Mapa']} · {r['PA']} · {r['Item']} · {formata_diferenca_caixas(r['Diferença'], r['FamiliaConv'])} ({r['Data']})"
             for _, r in df_fechamento.iterrows()
         ]
         if opcoes_justif:
@@ -1601,24 +1635,27 @@ with aba_fechamento:
                 st.rerun()
 
         df_fechamento_exib = df_fechamento.copy()
-        df_fechamento_exib["Diferença"] = df_fechamento_exib["Diferença"].apply(lambda v: f"+{int(v)}" if v > 0 else f"{int(v)}")
+        df_fechamento_exib["Diferença (cx)"] = df_fechamento_exib.apply(
+            lambda r: formata_diferenca_caixas(r["Diferença"], r["FamiliaConv"]), axis=1
+        )
         df_fechamento_exib["Justificativa"] = df_fechamento_exib["Justificativa"].replace("", "—")
         renderizar_tabela_limpa(
-            df_fechamento_exib[["Mapa", "Data", "Origem", "Item", "Diferença", "Justificativa"]],
-            ["Mapa", "Data", "Origem", "Item", "Diferença", "Justificativa"],
+            df_fechamento_exib[["Mapa", "Data", "PA", "Item", "Diferença (cx)", "Justificativa"]],
+            ["Mapa", "Data", "PA", "Item", "Diferença (cx)", "Justificativa"],
             col_status="",
         )
 
         # ================= MAPA DE CALOR (variação diária dos itens mais voláteis) =================
         st.divider()
         st.markdown("### 🌡️ Mapa de Calor — variação diária")
-        st.caption("Diferença (Faltou/Sobrou) por item e por dia, em todo o histórico disponível — a data do fechamento acima fica destacada.")
+        st.caption("Diferença (Faltou/Sobrou) em caixas, por item e por dia, em todo o histórico disponível — a data do fechamento acima fica destacada.")
 
         if df_fechamento_todas_datas["Data"].nunique() < 2:
             st.caption("Precisa de pelo menos 2 dias com diferença registrada pra montar o mapa de calor.")
         else:
             impacto_item = df_fechamento_todas_datas.groupby("Item")["Diferença"].apply(lambda s: s.abs().sum()).sort_values(ascending=False)
             itens_top_calor = impacto_item.head(10).index.tolist()
+            item_familia_lookup = df_fechamento_todas_datas.drop_duplicates("Item").set_index("Item")["FamiliaConv"].to_dict()
 
             pivot = df_fechamento_todas_datas[df_fechamento_todas_datas["Item"].isin(itens_top_calor)].pivot_table(
                 index="Item", columns="Data", values="Diferença", aggfunc="sum", fill_value=0
@@ -1644,13 +1681,14 @@ with aba_fechamento:
             )
             linhas_calor = []
             for item_nome in itens_top_calor:
+                familia_item = item_familia_lookup.get(item_nome, "Outro")
                 celulas = f'<td style="padding:8px 10px; font-size:12.5px; white-space:nowrap;">{item_nome}</td>'
                 for d in datas_ordenadas:
                     v = pivot.loc[item_nome, d] if item_nome in pivot.index and d in pivot.columns else 0
                     bg, fg = _cor_celula(v)
                     borda = "box-shadow: inset 0 0 0 2px #185FA5;" if d == data_fechamento_str else ""
-                    texto_v = f"+{int(v)}" if v > 0 else (f"{int(v)}" if v < 0 else "·")
-                    celulas += f'<td style="padding:8px 10px; text-align:center; background:{bg}; color:{fg}; font-weight:600; font-size:12.5px; {borda}">{texto_v}</td>'
+                    texto_v = formata_diferenca_caixas(v, familia_item) if v != 0 else "·"
+                    celulas += f'<td style="padding:8px 10px; text-align:center; background:{bg}; color:{fg}; font-weight:600; font-size:12.5px; white-space:nowrap; {borda}">{texto_v}</td>'
                 linhas_calor.append(f"<tr>{celulas}</tr>")
 
             html_calor = (
