@@ -349,6 +349,21 @@ if df_mapa_pa is not None and not df_mapa_pa.empty:
 else:
     df_mapa_pa = ler_aba_historico("MapaPAHistorico")
 
+# O Excel guarda/relê "Mapa" e "MapaConsolidado" como número quando o texto parece um
+# número puro — isso corrompe o tipo (vira NaN/float em vez de string) e quebra tudo
+# que espera string. Relimpa sempre que o histórico vem de volta do Drive.
+if df_mapa_pa is not None and not df_mapa_pa.empty:
+    if "Mapa" in df_mapa_pa.columns:
+        df_mapa_pa["Mapa"] = df_mapa_pa["Mapa"].apply(limpa_mapa)
+    if "MapaConsolidado" in df_mapa_pa.columns:
+        df_mapa_pa["MapaConsolidado"] = df_mapa_pa["MapaConsolidado"].apply(
+            lambda v: "" if str(v).strip().lower() in ("", "nan", "none", "0") else limpa_mapa(v)
+        )
+    else:
+        df_mapa_pa["MapaConsolidado"] = ""
+    df_mapa_pa = df_mapa_pa.dropna(subset=["Mapa"])
+    df_mapa_pa = df_mapa_pa[df_mapa_pa["Mapa"].str.lower() != "nan"]
+
 if df_mapa_pa is not None and not df_mapa_pa.empty:
     for _, _linha in df_mapa_pa.iterrows():
         if _linha.get("MapaConsolidado") and _linha["MapaConsolidado"] != _linha["Mapa"]:
@@ -483,7 +498,7 @@ with st.sidebar:
         if mapas_conc_sem_relatorio:
             st.warning(f"⚠️ {len(mapas_conc_sem_relatorio)} mapa(s) do CONC.csv ainda não estão no 03.07.13.")
             with st.expander("Ver quais"):
-                for m in sorted(mapas_conc_sem_relatorio, key=lambda x: int(x) if x.isdigit() else 0):
+                for m in sorted(mapas_conc_sem_relatorio, key=lambda x: int(str(x)) if str(x).isdigit() else 0):
                     st.caption(f"{m} — {MAPA_PA_CLASSIFICACAO.get(m, '?')}")
         else:
             st.caption("✅ Todos os mapas do CONC.csv já estão no 03.07.13.")
@@ -1001,7 +1016,7 @@ with aba_conciliacao:
         if _mapas_conflito:
             st.error(
                 f"⚠️ Mapa(s) registrados tanto individualmente quanto em lote — isso zera a "
-                f"Saída do lado individual: {', '.join(sorted(_mapas_conflito, key=lambda m: int(m) if m.isdigit() else 0))}. "
+                f"Saída do lado individual: {', '.join(sorted(_mapas_conflito, key=lambda m: int(str(m)) if str(m).isdigit() else 0))}. "
                 "Apague o registro individual OU o lote pra esses mapas (seção 'Editar ou Apagar "
                 "Registros' / 'Apagar um lote', mais abaixo nesta aba)."
             )
