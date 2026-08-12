@@ -473,6 +473,21 @@ with st.sidebar:
             f"CONC.csv: {len(MAPA_PA_CLASSIFICACAO)} mapa(s) no período ({_periodo_str})."
         )
 
+        # Verificação de integridade: todo mapa do CONC.csv deveria existir no
+        # 03.07.13 — se não existir, a Saída dele conta como 0 (não "falta", só
+        # invisível), o que pode mascarar ou distorcer números de conciliação.
+        mapas_conc_resolvidos = set(MAPA_PA_CLASSIFICACAO.keys())
+        mapas_no_relatorio = set(df_mapas_ag_sem_filtro_data["Mapa"].unique()) if df_mapas_ag_sem_filtro_data is not None and not df_mapas_ag_sem_filtro_data.empty else set()
+        mapas_conc_sem_relatorio = mapas_conc_resolvidos - mapas_no_relatorio
+
+        if mapas_conc_sem_relatorio:
+            st.warning(f"⚠️ {len(mapas_conc_sem_relatorio)} mapa(s) do CONC.csv ainda não estão no 03.07.13.")
+            with st.expander("Ver quais"):
+                for m in sorted(mapas_conc_sem_relatorio, key=lambda x: int(x) if x.isdigit() else 0):
+                    st.caption(f"{m} — {MAPA_PA_CLASSIFICACAO.get(m, '?')}")
+        else:
+            st.caption("✅ Todos os mapas do CONC.csv já estão no 03.07.13.")
+
 
 def gerar_simulacao_perfeita(data_alvo) -> pd.DataFrame:
     """Pra cada mapa Tianguá/Granja do CONC.csv na data escolhida, monta uma linha de
@@ -1605,9 +1620,16 @@ with aba_fechamento:
     # mostrar variação); df_fechamento (filtrado pela data escolhida) alimenta o Top
     # Faltas/Sobras e as Justificativas — que são sempre sobre UM fechamento específico.
     df_fechamento_todas_datas = pd.concat(partes_fechamento, ignore_index=True) if partes_fechamento else pd.DataFrame(columns=["Mapa", "Item", "Diferença", "Data", "PA", "FamiliaConv"])
+
+    pas_disponiveis = sorted(df_fechamento_todas_datas["PA"].unique().tolist()) if not df_fechamento_todas_datas.empty else ["Tianguá", "Granja", "Sede"]
+    pas_escolhidas = st.multiselect("Filtrar por PA", pas_disponiveis, default=pas_disponiveis, key="fechamento_pas_filtro")
+
+    df_fechamento_todas_datas = df_fechamento_todas_datas[df_fechamento_todas_datas["PA"].isin(pas_escolhidas)]
     df_fechamento = df_fechamento_todas_datas[df_fechamento_todas_datas["Data"] == data_fechamento_str].copy()
 
-    if df_fechamento.empty:
+    if not pas_escolhidas:
+        st.info("Selecione ao menos uma PA acima pra ver o fechamento.")
+    elif df_fechamento.empty:
         st.info(f"Nenhuma diferença registrada em {data_fechamento_str} — nada pra fechar nesse dia.")
     else:
         FAMILIAS_GARRAFA_FECHAMENTO = ("300ml", "600ml", "Verde 600", "1L")
@@ -1634,6 +1656,15 @@ with aba_fechamento:
         # ================= TOP 10 FALTAS / TOP 10 SOBRAS (por caixa, com a PA) =================
         st.markdown(f"### 🔻🔺 Top 10 Faltas e Sobras — {data_fechamento_str}")
         st.caption("Quantidade em caixas (não em vasilhame solto) — cada linha já mostra em qual PA está ocorrendo.")
+
+        mapas_conc_data_ref = {m for m, d in zip(df_mapa_pa["Mapa"], df_mapa_pa["Data"]) if d == data_fechamento_str} if df_mapa_pa is not None and not df_mapa_pa.empty else set()
+        mapas_conc_data_ref_resolvidos = set(resolver_mapas(mapas_conc_data_ref))
+        mapas_sem_relatorio_data = mapas_conc_data_ref_resolvidos - (set(df_mapas_ag_sem_filtro_data["Mapa"].unique()) if df_mapas_ag_sem_filtro_data is not None and not df_mapas_ag_sem_filtro_data.empty else set())
+        if mapas_sem_relatorio_data:
+            st.warning(
+                f"⚠️ {len(mapas_sem_relatorio_data)} mapa(s) de {data_fechamento_str} ainda não estão no 03.07.13 — "
+                "eles NÃO entram nos números abaixo (Saída contaria 0). Os totais podem crescer quando o relatório for atualizado."
+            )
 
         totais_item = df_fechamento.groupby(["Item", "PA", "FamiliaConv"], as_index=False)["Diferença"].sum()
         totais_item["Qtd (cx)"] = totais_item.apply(lambda r: formata_diferenca_caixas(r["Diferença"], r["FamiliaConv"]), axis=1)
