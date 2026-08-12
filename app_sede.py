@@ -399,7 +399,11 @@ def buscar_mapas_por_data_pa(data_alvo, pa_alvo: str) -> list[str]:
     if df_mapa_pa is None or df_mapa_pa.empty or "Data" not in df_mapa_pa.columns or "PA" not in df_mapa_pa.columns:
         return []
     data_str = data_alvo.strftime("%d/%m/%Y")
-    sub = df_mapa_pa[(df_mapa_pa["Data"] == data_str) & (df_mapa_pa["PA"].str.upper() == pa_alvo.upper())]
+    # Normaliza os dois lados (planilha às vezes vem "TIANGUA" sem acento) antes de
+    # comparar, senão "TIANGUA" != "Tianguá" e o mapa nunca é encontrado.
+    pa_alvo_norm = _PA_NORMALIZADO.get(pa_alvo.strip().upper(), pa_alvo).upper()
+    pa_bate = df_mapa_pa["PA"].apply(lambda v: _PA_NORMALIZADO.get(str(v).strip().upper(), v).upper() == pa_alvo_norm)
+    sub = df_mapa_pa[(df_mapa_pa["Data"] == data_str) & pa_bate]
     return sorted(sub["Mapa"].dropna().unique().tolist(), key=lambda m: int(m) if str(m).isdigit() else 0)
 
 
