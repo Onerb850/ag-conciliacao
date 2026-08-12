@@ -329,9 +329,30 @@ if df_mapa_pa is not None:
             except Exception:
                 return s
         df_mapa_pa["MapaConsolidado"] = df_mapa_pa["MapaConsolidado"].apply(_limpar_mapa_consolidado)
-        for _, _linha in df_mapa_pa.iterrows():
-            if _linha["MapaConsolidado"] and _linha["MapaConsolidado"] != _linha["Mapa"]:
-                MAPA_CONSOLIDADO_LOOKUP[_linha["Mapa"]] = _linha["MapaConsolidado"]
+    else:
+        df_mapa_pa["MapaConsolidado"] = ""
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _ingerir_conc_no_historico(_df_conc_limpo: pd.DataFrame) -> pd.DataFrame:
+    """Acumula o CONC.csv atual (já limpo: Data/Mapa/PA/MapaConsolidado) num histórico
+    permanente — assim, mesmo substituindo o CONC.csv todo dia, um mapa de um dia
+    anterior que ainda não foi conferido continua aparecendo nas conciliações, em vez
+    de sumir quando o arquivo do dia é trocado. Cacheado 5 min (igual carregar()) pra
+    não gravar no Drive a cada interação do usuário na tela."""
+    colunas_manter = [c for c in ["Data", "Mapa", "PA", "MapaConsolidado"] if c in _df_conc_limpo.columns]
+    return acumular_historico(_df_conc_limpo[colunas_manter], "MapaPAHistorico", ["Data", "Mapa"])
+
+
+if df_mapa_pa is not None and not df_mapa_pa.empty:
+    df_mapa_pa = _ingerir_conc_no_historico(df_mapa_pa)
+else:
+    df_mapa_pa = ler_aba_historico("MapaPAHistorico")
+
+if df_mapa_pa is not None and not df_mapa_pa.empty:
+    for _, _linha in df_mapa_pa.iterrows():
+        if _linha.get("MapaConsolidado") and _linha["MapaConsolidado"] != _linha["Mapa"]:
+            MAPA_CONSOLIDADO_LOOKUP[_linha["Mapa"]] = _linha["MapaConsolidado"]
 
 
 def resolver_mapa(mapa: str) -> str:
@@ -440,8 +461,8 @@ _periodo_str = f"{data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/
 with st.sidebar:
     if df_mapas_ag is None:
         st.error(f"Não encontrei '{ARQUIVO_MAPAS_AG.name}' no Google Drive.")
-    elif df_mapa_pa is None:
-        st.error(f"Não encontrei '{ARQUIVO_MAPA_PA.name}' no Google Drive.")
+    elif df_mapa_pa is None or df_mapa_pa.empty:
+        st.error(f"Não encontrei '{ARQUIVO_MAPA_PA.name}' no Google Drive nem histórico acumulado ainda.")
     else:
         st.success(
             f"{ARQUIVO_MAPAS_AG.name}: {len(df_mapas_ag)} linha(s). "
@@ -493,8 +514,8 @@ def gerar_simulacao_perfeita(data_alvo) -> pd.DataFrame:
         })
     return pd.DataFrame(linhas)
 
-aba_vazio_pa, aba_conciliacao, aba_conciliacao_sede, aba_categorias_extra = st.tabs(
-    ["Vazio por PA", "Conciliação Mapas PA", "Conciliação Mapas Sede", "Outras Categorias"]
+aba_vazio_pa, aba_conciliacao, aba_conciliacao_sede, aba_categorias_extra, aba_fechamento = st.tabs(
+    ["Vazio por PA", "Conciliação Mapas PA", "Conciliação Mapas Sede", "Outras Categorias", "📊 Fechamento"]
 )
 
 # Roteamento entre as abas agora vem do CONC.csv (MAPA_PA_CLASSIFICACAO), não mais de
@@ -604,8 +625,8 @@ with aba_vazio_pa:
     pa_lote = col_pa_l.selectbox("PA", ["Tianguá", "Granja"], key="pa_lote")
 
     mapas_lote_auto = buscar_mapas_por_data_pa(data_lote, pa_lote)
-    if df_mapa_pa is None:
-        st.error(f"Não encontrei '{ARQUIVO_MAPA_PA.name}' no Google Drive — sem essa planilha não dá pra buscar os mapas automaticamente.")
+    if df_mapa_pa is None or df_mapa_pa.empty:
+        st.error(f"Não encontrei '{ARQUIVO_MAPA_PA.name}' no Google Drive nem histórico acumulado ainda — sem isso não dá pra buscar os mapas automaticamente.")
     elif mapas_lote_auto:
         st.success(f"{len(mapas_lote_auto)} mapa(s) de {pa_lote} em {data_lote.strftime('%d/%m/%Y')}: {', '.join(mapas_lote_auto)}")
     else:
@@ -814,6 +835,7 @@ with aba_conciliacao:
     st.header("⚖️ Conciliação de Mapas PA (Saída vs. Retorno conferente)")
     st.caption("Mapas Tianguá/Granja do CONC.csv — aparecem mesmo sem conferência ainda.")
 
+    df_concil = pd.DataFrame()  # fallback — usado pela aba Fechamento mesmo sem dados aqui
     if df_mapas_ag_sem_filtro_data is None or df_mapas_ag_sem_filtro_data.empty or not MAPAS_PA_CONC:
         st.info("⚠️ Aguardando dados. É necessário ter o relatório 03.07.13 e o CONC.csv (com mapas Tianguá/Granja) carregados.")
     else:
@@ -1102,6 +1124,7 @@ with aba_conciliacao:
 with aba_conciliacao_sede:
     st.header("🏢 Conciliação de Mapas Sede (Previsto vs. Realizado)")
     st.caption("Total Previsto x Total Realizado. Só mapas classificados como SEDE no CONC.csv.")
+    df_concil_sede = pd.DataFrame()  # fallback — usado pela aba Fechamento mesmo sem dados aqui
 
     # =========================================================================
     # PREVISÃO DE CONTAGEM DO AG — quanto deveria estar de volta no armazém,
@@ -1428,3 +1451,146 @@ with aba_categorias_extra:
                 df_cat_display,
                 ["Mapa", "AG", "Categoria", "Previsto", "Realizado", "Diferença", "Status"],
             )
+
+
+# =========================================================================
+# ABA FECHAMENTO — junta PA + Sede numa visão única: Top 10 Faltas/Sobras,
+# Justificativas (texto livre por item) e Mapa de Calor (variação diária).
+# =========================================================================
+with aba_fechamento:
+    st.header("📊 Fechamento da Conciliação")
+    st.caption("Visão única PA + Sede — Top Faltas/Sobras, justificativas e variação diária.")
+
+    # --- Unifica PA (por Família) e Sede (por Item/AG) numa tabela só de diferenças ---
+    partes_fechamento = []
+    if not df_concil.empty and "Diferença_Unidades" in df_concil.columns:
+        pa_unif = df_concil[df_concil["Diferença_Unidades"] != 0][["Mapa", "Familia", "Diferença_Unidades"]].copy()
+        pa_unif = pa_unif.rename(columns={"Familia": "Item", "Diferença_Unidades": "Diferença"})
+        pa_unif["Data"] = df_concil.get("Data", "-")
+        pa_unif["Origem"] = "PA"
+        partes_fechamento.append(pa_unif)
+    if not df_concil_sede.empty and "Diferença_Num" in df_concil_sede.columns:
+        sede_unif = df_concil_sede[df_concil_sede["Diferença_Num"] != 0][["Mapa", "AG", "Diferença_Num", "Data"]].copy()
+        sede_unif = sede_unif.rename(columns={"AG": "Item", "Diferença_Num": "Diferença"})
+        sede_unif["Origem"] = "Sede"
+        partes_fechamento.append(sede_unif)
+
+    df_fechamento = pd.concat(partes_fechamento, ignore_index=True) if partes_fechamento else pd.DataFrame(columns=["Mapa", "Item", "Diferença", "Data", "Origem"])
+
+    if df_fechamento.empty:
+        st.success("🎉 Nenhuma diferença registrada — nada pra fechar hoje.")
+    else:
+        # ================= TOP 10 FALTAS / TOP 10 SOBRAS (por quantidade) =================
+        st.markdown("### 🔻🔺 Top 10 Faltas e Sobras (por quantidade)")
+        totais_item = df_fechamento.groupby("Item")["Diferença"].sum().reset_index()
+
+        top_faltas = totais_item[totais_item["Diferença"] < 0].sort_values("Diferença").head(10)
+        top_sobras = totais_item[totais_item["Diferença"] > 0].sort_values("Diferença", ascending=False).head(10)
+
+        col_falta, col_sobra = st.columns(2)
+        with col_falta:
+            st.markdown("**🔻 TOP 10 Faltas**")
+            if top_faltas.empty:
+                st.caption("Nenhuma falta no recorte.")
+            else:
+                df_tf = top_faltas.rename(columns={"Diferença": "Qtd"}).copy()
+                df_tf["Qtd"] = df_tf["Qtd"].apply(lambda v: f"{int(v)}")
+                renderizar_tabela_limpa(df_tf[["Item", "Qtd"]], ["Item", "Qtd"], col_status="")
+        with col_sobra:
+            st.markdown("**🔺 TOP 10 Sobras**")
+            if top_sobras.empty:
+                st.caption("Nenhuma sobra no recorte.")
+            else:
+                df_ts = top_sobras.rename(columns={"Diferença": "Qtd"}).copy()
+                df_ts["Qtd"] = df_ts["Qtd"].apply(lambda v: f"+{int(v)}")
+                renderizar_tabela_limpa(df_ts[["Item", "Qtd"]], ["Item", "Qtd"], col_status="")
+
+        # ================= JUSTIFICATIVAS (texto livre por Mapa+Item+Data) =================
+        st.divider()
+        st.markdown("### 📝 Justificativas")
+
+        df_justif_hist = ler_aba_historico("Justificativas")
+        justif_lookup = {}
+        if not df_justif_hist.empty:
+            for _, r in df_justif_hist.iterrows():
+                justif_lookup[(str(r.get("Data", "")), str(r.get("Mapa", "")), str(r.get("Item", "")))] = r.get("Justificativa", "")
+
+        df_fechamento["Justificativa"] = df_fechamento.apply(
+            lambda r: justif_lookup.get((str(r["Data"]), str(r["Mapa"]), str(r["Item"])), ""), axis=1
+        )
+
+        opcoes_justif = [
+            f"{r['Mapa']} · {r['Item']} · {r['Diferença']:+.0f} ({r['Data']})"
+            for _, r in df_fechamento.iterrows()
+        ]
+        if opcoes_justif:
+            col_j1, col_j2 = st.columns([2, 3])
+            item_escolhido = col_j1.selectbox("Item com diferença", opcoes_justif, key="justif_item_escolhido")
+            texto_justif = col_j2.text_input("Justificativa", key="justif_texto")
+            if st.button("💾 Salvar justificativa"):
+                idx = opcoes_justif.index(item_escolhido)
+                linha = df_fechamento.iloc[idx]
+                nova_justif = pd.DataFrame([{
+                    "Data": linha["Data"], "Mapa": linha["Mapa"], "Item": linha["Item"],
+                    "Diferença": linha["Diferença"], "Justificativa": texto_justif,
+                }])
+                acumular_historico(nova_justif, "Justificativas", ["Data", "Mapa", "Item"])
+                st.success("Justificativa salva.")
+                st.rerun()
+
+        df_fechamento_exib = df_fechamento.copy()
+        df_fechamento_exib["Diferença"] = df_fechamento_exib["Diferença"].apply(lambda v: f"+{int(v)}" if v > 0 else f"{int(v)}")
+        df_fechamento_exib["Justificativa"] = df_fechamento_exib["Justificativa"].replace("", "—")
+        renderizar_tabela_limpa(
+            df_fechamento_exib[["Mapa", "Data", "Origem", "Item", "Diferença", "Justificativa"]],
+            ["Mapa", "Data", "Origem", "Item", "Diferença", "Justificativa"],
+            col_status="",
+        )
+
+        # ================= MAPA DE CALOR (variação diária dos itens mais voláteis) =================
+        st.divider()
+        st.markdown("### 🌡️ Mapa de Calor — variação diária")
+        st.caption("Diferença (Faltou/Sobrou) por item e por dia — os itens com mais impacto no período aparecem primeiro.")
+
+        if df_fechamento["Data"].nunique() < 2:
+            st.caption("Precisa de pelo menos 2 dias com diferença registrada pra montar o mapa de calor.")
+        else:
+            impacto_item = df_fechamento.groupby("Item")["Diferença"].apply(lambda s: s.abs().sum()).sort_values(ascending=False)
+            itens_top_calor = impacto_item.head(10).index.tolist()
+
+            pivot = df_fechamento[df_fechamento["Item"].isin(itens_top_calor)].pivot_table(
+                index="Item", columns="Data", values="Diferença", aggfunc="sum", fill_value=0
+            )
+            datas_ordenadas = sorted(pivot.columns, key=lambda d: pd.to_datetime(d, dayfirst=True, errors="coerce"))
+            pivot = pivot.reindex(columns=datas_ordenadas).reindex(itens_top_calor)
+
+            maior_abs = max(pivot.abs().max().max(), 1)
+
+            def _cor_celula(v: float) -> tuple[str, str]:
+                intensidade = min(abs(v) / maior_abs, 1.0)
+                if v < 0:
+                    return f"rgba(163,45,45,{0.12 + intensidade * 0.6:.2f})", "#501313"
+                if v > 0:
+                    return f"rgba(15,110,86,{0.12 + intensidade * 0.6:.2f})", "#0F6E56"
+                return "#F2F2F0", "#888780"
+
+            cabecalho_calor = "".join(
+                f'<th style="padding:6px 10px; font-size:11.5px; color:#888780; font-weight:600; text-align:center;">{d}</th>'
+                for d in datas_ordenadas
+            )
+            linhas_calor = []
+            for item_nome in itens_top_calor:
+                celulas = f'<td style="padding:8px 10px; font-size:12.5px; white-space:nowrap;">{item_nome}</td>'
+                for d in datas_ordenadas:
+                    v = pivot.loc[item_nome, d] if item_nome in pivot.index and d in pivot.columns else 0
+                    bg, fg = _cor_celula(v)
+                    texto_v = f"+{int(v)}" if v > 0 else (f"{int(v)}" if v < 0 else "·")
+                    celulas += f'<td style="padding:8px 10px; text-align:center; background:{bg}; color:{fg}; font-weight:600; font-size:12.5px;">{texto_v}</td>'
+                linhas_calor.append(f"<tr>{celulas}</tr>")
+
+            html_calor = (
+                '<div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse;">'
+                f'<thead><tr><th style="padding:6px 10px; text-align:left; font-size:11.5px; color:#888780;">Item</th>{cabecalho_calor}</tr></thead>'
+                f'<tbody>{"".join(linhas_calor)}</tbody></table></div>'
+            )
+            st.markdown(html_calor, unsafe_allow_html=True)
