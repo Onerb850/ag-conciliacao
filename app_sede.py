@@ -1241,88 +1241,14 @@ with aba_conciliacao:
         df_display = df_display[colunas_exibir_pa]
         df_display = df_display.sort_values(by=["Mapa", "Familia"])
 
-        # =================================================================
-        # RESUMO PRA ENVIAR (WhatsApp/print) — números por PA, contando
-        # MAPAS (não itens/famílias). Um mapa só conta como "Bateu" se TODAS
-        # as suas famílias bateram; se qualquer uma faltou, o mapa inteiro
-        # conta como "Faltou" (Faltou > Sobrou > Bateu em prioridade).
-        # =================================================================
-        st.divider()
-        titulo_resumo = "📋 Resumo pra enviar"
-        if tem_data_vazio_pa and data_filter != "Todas":
-            titulo_resumo += f" — {data_filter}"
-        st.markdown(f"### {titulo_resumo}")
-
-        qtd_mapas = df_display["Mapa"].nunique()
-        st.caption(f"{qtd_mapas} mapa(s) conferido(s) nesse recorte.")
-
-        pas_no_resumo = sorted(df_display["PA"].unique().tolist())
-        ORDEM_STATUS_PA = ["❌ Faltou AG", "⚠️ Sobrou AG", "✅ Bateu"]
-
-        # Por enquanto, sobra de Pallet/Chapatex não derruba o status do mapa no resumo
-        # (só Garrafa/Garrafeira/Barril contam pra isso) — o item continua aparecendo
-        # normal na tabela de detalhe, só não conta contra o mapa no card.
-        FAMILIAS_IGNORAR_SOBRA_RESUMO = {"Pallet PBR1", "Pallet PBR2", "Chapatex"}
-
-        for pa_nome in pas_no_resumo:
-            df_pa_atual = df_display[df_display["PA"] == pa_nome].copy()
-            st.markdown(
-                f"""<div style="display:inline-block; background-color:#e2e6ea; color:#212529; font-weight:700; font-size:15px; padding:6px 16px; border-radius:20px; margin-bottom:10px;">📍 {pa_nome}</div>""",
-                unsafe_allow_html=True,
-            )
-            df_pa_atual["Status_Resumo"] = df_pa_atual.apply(
-                lambda r: "✅ Bateu" if (r["Status"] == "⚠️ Sobrou AG" and r["Familia"] in FAMILIAS_IGNORAR_SOBRA_RESUMO) else r["Status"],
-                axis=1,
-            )
-            status_mapas_pa = df_pa_atual.groupby("Mapa")["Status_Resumo"].apply(
-                lambda s: next((st_ for st_ in ORDEM_STATUS_PA if st_ in set(s)), ORDEM_STATUS_PA[-1])
-            )
-            bateu_pa = int((status_mapas_pa == "✅ Bateu").sum())
-            faltou_pa = int((status_mapas_pa == "❌ Faltou AG").sum())
-            sobrou_pa = int((status_mapas_pa == "⚠️ Sobrou AG").sum())
-
-            # Linhas de detalhe (Mapa · Família · Diferença) mostradas dentro do card,
-            # pra saber de cara QUAL item está causando a diferença sem abrir a tabela.
-            itens_visiveis_pa = df_pa_atual[df_pa_atual["Status_Resumo"] != "✅ Bateu"]
-            detalhes_faltou = [
-                f"Mapa {r['Mapa']} · {r['Familia']} · {r['Diferença']}"
-                for _, r in itens_visiveis_pa[itens_visiveis_pa["Status"] == "❌ Faltou AG"].iterrows()
-            ]
-            detalhes_sobrou = [
-                f"Mapa {r['Mapa']} · {r['Familia']} · {r['Diferença']}"
-                for _, r in itens_visiveis_pa[itens_visiveis_pa["Status"] == "⚠️ Sobrou AG"].iterrows()
-            ]
-
-            renderizar_cards_resumo([
-                ("Bateram", bateu_pa, "verde", None),
-                ("Faltou", faltou_pa, "vermelho", detalhes_faltou),
-                ("Sobrou", sobrou_pa, "amarelo", detalhes_sobrou),
-            ])
-            st.write("")
-
-        itens_problema = df_display[df_display["Status"] != "✅ Bateu"]
-        if itens_problema.empty:
-            st.success("🎉 Nenhuma diferença — tudo bateu certinho!")
-        else:
-            eh_lote = itens_problema["Mapa"].str.startswith("Lote:")
-            itens_problema_individual = itens_problema[~eh_lote]
-            itens_problema_lote = itens_problema[eh_lote].copy()
-
-            if not itens_problema_individual.empty:
-                st.markdown("**Itens com diferença (mapas individuais):**")
-                colunas_resumo_prob = ["Mapa"] + (["Data"] if tem_data_vazio_pa else []) + ["PA", "Familia", "Diferença", "Status"]
-                renderizar_tabela_limpa(itens_problema_individual[colunas_resumo_prob], colunas_resumo_prob)
-
-            if not itens_problema_lote.empty:
-                st.markdown("**Itens com diferença (lotes):**")
-                itens_problema_lote["Mapas"] = itens_problema_lote["Mapa"].str.replace("Lote: ", "", regex=False)
-                colunas_resumo_lote = ["Mapas"] + (["Data"] if tem_data_vazio_pa else []) + ["PA", "Familia", "Diferença", "Status"]
-                renderizar_tabela_limpa(itens_problema_lote[colunas_resumo_lote], colunas_resumo_lote)
+        # Como a conferência é feita em lote (não dá pra apontar falta por mapa
+        # individual), o detalhamento por PA/lote fica concentrado na aba "Fechamento"
+        # — aqui só mantemos os dados calculados (usados por ela) e uma tabela
+        # completa opcional, sem repetir o resumo por mapa que não reflete o fluxo real.
+        st.info("📊 Veja o resumo de divergências (Tianguá, Granja e Sede) na aba **Fechamento**.")
 
         with st.expander("📄 Ver tabela completa (todos os itens, inclusive os que bateram)"):
             renderizar_tabela_limpa(df_display, colunas_exibir_pa)
-
-        st.caption("Faltou AG = saiu e não retornou (ou retornou menos). Sobrou AG = retornou mais que o previsto.")
 
 
 # =========================================================================
@@ -1512,78 +1438,13 @@ with aba_conciliacao_sede:
         colunas_exibir_sede = ["Mapa", "Data", "AG", "Saída (Total)", "Retorno (Total)", "Diferença", "Status"]
         df_display_sede = df_display_sede[colunas_exibir_sede].sort_values(by=["Mapa", "AG"])
 
-        # =================================================================
-        # RESUMO PRA ENVIAR (WhatsApp/print) — usa df_concil_sede inteiro
-        # (não os filtros da tela), pra sempre dar o total real do recorte.
-        # Conta MAPAS (não itens): cada mapa recebe o pior status entre
-        # todos os seus itens (Faltou > Sobrou > Sem Saída > Aguardando >
-        # Bateu), e só conta como Bateu se TODOS os itens baterem.
-        # =================================================================
+        # O resumo consolidado (Tianguá + Granja + Sede) ficou concentrado na aba
+        # "Fechamento" — aqui mantemos só o cálculo e uma tabela completa opcional.
         st.divider()
-        st.markdown("### 📋 Resumo pra enviar")
-
-        qtd_mapas_sede = df_concil_sede["Mapa"].nunique()
-        st.caption(f"{qtd_mapas_sede} mapa(s) nesse recorte.")
-
-        ORDEM_STATUS_SEDE = [
-            "❌ Faltou (não retornou)", "⚠️ Sobrou no Retorno",
-            "🔎 Sem Saída", "⏳ Aguardando Retorno", "✅ Bateu",
-        ]
-        status_mapas_sede = status_por_mapa(df_concil_sede, ORDEM_STATUS_SEDE)
-
-        bateu_sede = int((status_mapas_sede == "✅ Bateu").sum())
-        faltou_sede = int((status_mapas_sede == "❌ Faltou (não retornou)").sum())
-        sobrou_sede = int((status_mapas_sede == "⚠️ Sobrou no Retorno").sum())
-        sem_saida_sede = int((status_mapas_sede == "🔎 Sem Saída").sum())
-        aguardando_sede = int((status_mapas_sede == "⏳ Aguardando Retorno").sum())
-
-        # Linhas de detalhe (Mapa · AG · Diferença) dentro dos cards — mesmo padrão
-        # visual da aba Conciliação Mapas PA (badge de local + cards com detalhe).
-        itens_visiveis_sede = df_concil_sede[df_concil_sede["Status"] != "✅ Bateu"]
-        detalhes_faltou_sede = [
-            f"Mapa {r['Mapa']} · {r['AG']} · {r['Diferença']}"
-            for _, r in itens_visiveis_sede[itens_visiveis_sede["Status"] == "❌ Faltou (não retornou)"].iterrows()
-        ]
-        detalhes_sobrou_sede = [
-            f"Mapa {r['Mapa']} · {r['AG']} · {r['Diferença']}"
-            for _, r in itens_visiveis_sede[itens_visiveis_sede["Status"] == "⚠️ Sobrou no Retorno"].iterrows()
-        ]
-        detalhes_sem_saida_sede = [
-            f"Mapa {r['Mapa']} · {r['AG']}"
-            for _, r in itens_visiveis_sede[itens_visiveis_sede["Status"] == "🔎 Sem Saída"].iterrows()
-        ]
-        detalhes_aguardando_sede = [
-            f"Mapa {r['Mapa']} · {r['AG']}"
-            for _, r in itens_visiveis_sede[itens_visiveis_sede["Status"] == "⏳ Aguardando Retorno"].iterrows()
-        ]
-
-        st.markdown(
-            """<div style="display:inline-block; background-color:#e2e6ea; color:#212529; font-weight:700; font-size:15px; padding:6px 16px; border-radius:20px; margin-bottom:10px;">📍 Sede</div>""",
-            unsafe_allow_html=True,
-        )
-        renderizar_cards_resumo([
-            ("Bateram", bateu_sede, "verde", None),
-            ("Faltou", faltou_sede, "vermelho", detalhes_faltou_sede),
-            ("Sobrou", sobrou_sede, "amarelo", detalhes_sobrou_sede),
-            ("Sem Saída", sem_saida_sede, "azul", detalhes_sem_saida_sede),
-            ("Aguardando", aguardando_sede, "cinza", detalhes_aguardando_sede),
-        ])
-        st.write("")
-
-        itens_problema_sede = df_concil_sede[df_concil_sede["Status"] != "✅ Bateu"]
-        if itens_problema_sede.empty:
-            st.success("🎉 Nenhuma diferença — tudo bateu certinho!")
-        else:
-            st.markdown("**Itens com diferença:**")
-            renderizar_tabela_limpa(
-                itens_problema_sede[["Mapa", "Data", "AG", "Diferença", "Status"]],
-                ["Mapa", "Data", "AG", "Diferença", "Status"],
-            )
+        st.info("📊 Veja o resumo de divergências (Tianguá, Granja e Sede) na aba **Fechamento**.")
 
         with st.expander("📄 Ver tabela completa (respeitando os filtros da tela)"):
             renderizar_tabela_limpa(df_display_sede, colunas_exibir_sede)
-
-        st.caption("Pra ver por espécie, use a aba 'Outras Categorias'.")
 
 
 # =========================================================================
