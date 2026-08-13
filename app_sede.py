@@ -351,22 +351,15 @@ def _ingerir_conc_no_historico(_df_conc_limpo: pd.DataFrame) -> pd.DataFrame:
 
 
 if df_mapa_pa is not None and not df_mapa_pa.empty:
-    # Grava no histórico como registro/auditoria — mas NÃO usa o retorno acumulado.
-    # Só o CONC.csv atual decide quais mapas existem; assim, corrigir o arquivo
-    # (tirar um mapa por engano) já reflete na hora, sem deixar "preso" de versões
-    # antigas — você pediu que só conte o que está na planilha de agora.
-    _ingerir_conc_no_historico(df_mapa_pa)
+    # Acumula no histórico (MapaPAHistorico) — necessário pra Previsão de Contagem e
+    # o Fechamento conseguirem consultar dias anteriores, mesmo depois do CONC.csv de
+    # hoje substituir o de ontem. O risco de "mapa fantasma" (erro/teste de uma versão
+    # antiga que nunca mais sai do histórico) é tratado à parte: o alerta de
+    # integridade (sidebar) avisa quando isso acontece, e a ferramenta "Limpar
+    # registro antigo" (aba Vazio por PA) deixa você remover na hora, se precisar.
+    df_mapa_pa = _ingerir_conc_no_historico(df_mapa_pa)
 else:
-    # Só cai aqui se o CONC.csv ao vivo falhar em carregar — usa a última Data
-    # conhecida do histórico como aproximação, não tudo acumulado.
-    _hist_conc_fallback = ler_aba_historico("MapaPAHistorico")
-    if not _hist_conc_fallback.empty and "Data" in _hist_conc_fallback.columns:
-        _hist_conc_fallback["Mapa"] = _hist_conc_fallback["Mapa"].apply(limpar_numero_robusto)
-        _datas_conc_fallback = sorted(
-            _hist_conc_fallback["Data"].unique(), key=lambda d: pd.to_datetime(d, dayfirst=True, errors="coerce")
-        )
-        if _datas_conc_fallback:
-            df_mapa_pa = _hist_conc_fallback[_hist_conc_fallback["Data"] == _datas_conc_fallback[-1]]
+    df_mapa_pa = ler_aba_historico("MapaPAHistorico")
 
 # O Excel guarda/relê "Mapa" e "MapaConsolidado" como número quando o texto parece um
 # número puro — isso corrompe o tipo (vira NaN/float em vez de string) e quebra tudo
@@ -1034,11 +1027,12 @@ with aba_vazio_pa:
                 st.rerun()
 
     st.divider()
-    with st.expander("🧹 Limpar registro antigo do histórico do CONC (opcional)", expanded=False):
+    with st.expander("🧹 Limpar mapa 'fantasma' do histórico do CONC", expanded=False):
         st.caption(
-            "Desde a última atualização, o app só considera o CONC.csv **atual** pra decidir quais mapas "
-            "existem — versões antigas não ficam mais 'presas' influenciando nada. Esse histórico "
-            "(MapaPAHistorico) agora é só um registro/arquivo — limpar aqui é opcional, só organização."
+            "O app acumula todo mapa já visto no CONC.csv, pra Previsão de Contagem e o Fechamento "
+            "conseguirem consultar dias anteriores mesmo depois do arquivo de hoje substituir o de ontem. "
+            "Se um mapa veio de um teste/erro de digitação corrigido depois, ele fica 'preso' aqui achando "
+            "que ainda existe — o alerta de integridade (sidebar) avisa quando isso acontece. Remova aqui."
         )
         _hist_conc_bruto_limpeza = ler_aba_historico("MapaPAHistorico")
         if _hist_conc_bruto_limpeza.empty or "Mapa" not in _hist_conc_bruto_limpeza.columns:
