@@ -541,15 +541,15 @@ def gerar_simulacao_perfeita(data_alvo) -> pd.DataFrame:
         return pd.DataFrame()
 
     data_str = data_alvo.strftime("%d/%m/%Y")
+    _pa_normalizada_sim = df_mapa_pa["PA"].apply(lambda v: _PA_NORMALIZADO.get(str(v).strip().upper(), v))
     mapas_pa_sim = df_mapa_pa[
-        (df_mapa_pa["Data"] == data_str) & (df_mapa_pa["PA"].str.upper().isin(["TIANGUÁ", "GRANJA"]))
+        (df_mapa_pa["Data"] == data_str) & (_pa_normalizada_sim.isin(["Tianguá", "Granja"]))
     ][["Mapa", "PA"]].drop_duplicates().copy()
     if mapas_pa_sim.empty:
         return pd.DataFrame()
 
     mapas_pa_sim["MapaResolvido"] = mapas_pa_sim["Mapa"].apply(resolver_mapa)
-    pa_normalizado = {"TIANGUÁ": "Tianguá", "GRANJA": "Granja"}
-    mapas_pa_sim["PA"] = mapas_pa_sim["PA"].str.upper().map(pa_normalizado)
+    mapas_pa_sim["PA"] = mapas_pa_sim["PA"].apply(lambda v: _PA_NORMALIZADO.get(str(v).strip().upper(), v))
     pa_lookup_sim = mapas_pa_sim.groupby("MapaResolvido")["PA"].first().to_dict()
 
     familia_tipo_sim = df_020501_historico["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
