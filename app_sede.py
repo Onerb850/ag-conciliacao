@@ -28,6 +28,21 @@ from comum import (
 # prefixo, igual aos outros arquivos (De Material, 03.07.13).
 ARQUIVO_MAPA_PA = PASTA_PROJETO / "CONC.csv"
 
+
+def limpar_numero_robusto(v) -> str:
+    """Como limpa_mapa() do comum.py, mas também limpa strings tipo '257781.0' —
+    sobra de quando um número volta do Excel como float depois de acumular no
+    histórico. limpa_mapa() sozinha não dá conta disso (int('257781.0') falha),
+    então usa essa aqui pra QUALQUER leitura que já passou por um round-trip no
+    Excel (df_mapa_pa e df_mapas_ag_sem_filtro_data), não só no primeiro carregamento."""
+    s = str(v).strip()
+    if s.lower() in ("", "nan", "none"):
+        return ""
+    try:
+        return str(int(float(s)))
+    except Exception:
+        return s
+
 st.set_page_config(page_title="Conciliação de Mapas (AG)", layout="wide")
 st.title("⚖️ Conciliação de Mapas (AG)")
 st.caption("_\"Balança enganosa é abominação ao SENHOR, mas o peso justo lhe é agradável.\" — Provérbios 11:1_")
@@ -310,25 +325,16 @@ if df_mapa_pa is not None:
     df_mapa_pa = df_mapa_pa.rename(columns=_renomear_mapa_pa)
 
     if "Mapa" in df_mapa_pa.columns:
-        df_mapa_pa["Mapa"] = df_mapa_pa["Mapa"].apply(limpa_mapa)
+        df_mapa_pa["Mapa"] = df_mapa_pa["Mapa"].apply(limpar_numero_robusto)
     if "Data" in df_mapa_pa.columns:
         _dt_mapa_pa = pd.to_datetime(df_mapa_pa["Data"], dayfirst=True, errors="coerce")
         df_mapa_pa["Data"] = _dt_mapa_pa.dt.strftime("%d/%m/%Y")
     if "PA" in df_mapa_pa.columns:
         df_mapa_pa["PA"] = df_mapa_pa["PA"].astype(str).str.strip()
     if "MapaConsolidado" in df_mapa_pa.columns:
-        def _limpar_mapa_consolidado(v) -> str:
-            """Igual limpa_mapa(), mas trata o caso de vir como float (ex: 257690.0)
-            — acontece quando a coluna tem células vazias misturadas com números,
-            o que faz o pandas/Excel guardar tudo como decimal."""
-            s = str(v).strip()
-            if s.lower() in ("", "nan", "none", "0"):
-                return ""
-            try:
-                return str(int(float(s)))
-            except Exception:
-                return s
-        df_mapa_pa["MapaConsolidado"] = df_mapa_pa["MapaConsolidado"].apply(_limpar_mapa_consolidado)
+        df_mapa_pa["MapaConsolidado"] = df_mapa_pa["MapaConsolidado"].apply(
+            lambda v: "" if str(v).strip().lower() in ("", "nan", "none", "0") else limpar_numero_robusto(v)
+        )
     else:
         df_mapa_pa["MapaConsolidado"] = ""
 
@@ -345,16 +351,29 @@ def _ingerir_conc_no_historico(_df_conc_limpo: pd.DataFrame) -> pd.DataFrame:
 
 
 if df_mapa_pa is not None and not df_mapa_pa.empty:
-    df_mapa_pa = _ingerir_conc_no_historico(df_mapa_pa)
+    # Grava no histórico como registro/auditoria — mas NÃO usa o retorno acumulado.
+    # Só o CONC.csv atual decide quais mapas existem; assim, corrigir o arquivo
+    # (tirar um mapa por engano) já reflete na hora, sem deixar "preso" de versões
+    # antigas — você pediu que só conte o que está na planilha de agora.
+    _ingerir_conc_no_historico(df_mapa_pa)
 else:
-    df_mapa_pa = ler_aba_historico("MapaPAHistorico")
+    # Só cai aqui se o CONC.csv ao vivo falhar em carregar — usa a última Data
+    # conhecida do histórico como aproximação, não tudo acumulado.
+    _hist_conc_fallback = ler_aba_historico("MapaPAHistorico")
+    if not _hist_conc_fallback.empty and "Data" in _hist_conc_fallback.columns:
+        _hist_conc_fallback["Mapa"] = _hist_conc_fallback["Mapa"].apply(limpar_numero_robusto)
+        _datas_conc_fallback = sorted(
+            _hist_conc_fallback["Data"].unique(), key=lambda d: pd.to_datetime(d, dayfirst=True, errors="coerce")
+        )
+        if _datas_conc_fallback:
+            df_mapa_pa = _hist_conc_fallback[_hist_conc_fallback["Data"] == _datas_conc_fallback[-1]]
 
 # O Excel guarda/relê "Mapa" e "MapaConsolidado" como número quando o texto parece um
 # número puro — isso corrompe o tipo (vira NaN/float em vez de string) e quebra tudo
 # que espera string. Relimpa sempre que o histórico vem de volta do Drive.
 if df_mapa_pa is not None and not df_mapa_pa.empty:
     if "Mapa" in df_mapa_pa.columns:
-        df_mapa_pa["Mapa"] = df_mapa_pa["Mapa"].apply(limpa_mapa)
+        df_mapa_pa["Mapa"] = df_mapa_pa["Mapa"].apply(limpar_numero_robusto)
     if "MapaConsolidado" in df_mapa_pa.columns:
         df_mapa_pa["MapaConsolidado"] = df_mapa_pa["MapaConsolidado"].apply(
             lambda v: "" if str(v).strip().lower() in ("", "nan", "none", "0") else limpa_mapa(v)
@@ -475,9 +494,9 @@ if df_mapas_ag is not None:
     df_mapas_ag = df_mapas_ag.copy()
     df_mapas_ag.columns = df_mapas_ag.columns.str.strip()
     if "Material" in df_mapas_ag.columns:
-        df_mapas_ag["Material"] = df_mapas_ag["Material"].apply(limpa_mapa)
+        df_mapas_ag["Material"] = df_mapas_ag["Material"].apply(limpar_numero_robusto)
     if "Mapa" in df_mapas_ag.columns:
-        df_mapas_ag["Mapa"] = df_mapas_ag["Mapa"].apply(limpa_mapa)
+        df_mapas_ag["Mapa"] = df_mapas_ag["Mapa"].apply(limpar_numero_robusto)
     if "Descricao" in df_mapas_ag.columns:
         df_mapas_ag["Descricao"] = df_mapas_ag["Descricao"].astype(str).str.strip()
 
@@ -501,7 +520,7 @@ else:
 if df_mapas_ag_sem_filtro_data is not None and not df_mapas_ag_sem_filtro_data.empty:
     for _col_relimpar in ["Mapa", "Material"]:
         if _col_relimpar in df_mapas_ag_sem_filtro_data.columns:
-            df_mapas_ag_sem_filtro_data[_col_relimpar] = df_mapas_ag_sem_filtro_data[_col_relimpar].apply(limpa_mapa)
+            df_mapas_ag_sem_filtro_data[_col_relimpar] = df_mapas_ag_sem_filtro_data[_col_relimpar].apply(limpar_numero_robusto)
     df_mapas_ag_sem_filtro_data = df_mapas_ag_sem_filtro_data.dropna(subset=["Mapa"])
     df_mapas_ag_sem_filtro_data = df_mapas_ag_sem_filtro_data[df_mapas_ag_sem_filtro_data["Mapa"].str.lower() != "nan"]
     for _col_num_relimpar in colunas_numericas_relatorio:
@@ -604,7 +623,7 @@ _hist_vazio_pa_bruto = ler_aba_historico(NOME_ABA_SIMULACAO if modo_simulacao el
 # simulação); desativada, volta a mexer só na aba real "VazioPA".
 ABA_VAZIO_PA_ATIVA = NOME_ABA_SIMULACAO if modo_simulacao else "VazioPA"
 if not _hist_vazio_pa_bruto.empty and "Mapa" in _hist_vazio_pa_bruto.columns:
-    MAPAS_INDIVIDUAIS = set(_hist_vazio_pa_bruto["Mapa"].apply(limpa_mapa).unique())
+    MAPAS_INDIVIDUAIS = set(_hist_vazio_pa_bruto["Mapa"].apply(limpar_numero_robusto).unique())
 else:
     MAPAS_INDIVIDUAIS = set()
 
@@ -1015,6 +1034,33 @@ with aba_vazio_pa:
                 st.rerun()
 
     st.divider()
+    with st.expander("🧹 Limpar registro antigo do histórico do CONC (opcional)", expanded=False):
+        st.caption(
+            "Desde a última atualização, o app só considera o CONC.csv **atual** pra decidir quais mapas "
+            "existem — versões antigas não ficam mais 'presas' influenciando nada. Esse histórico "
+            "(MapaPAHistorico) agora é só um registro/arquivo — limpar aqui é opcional, só organização."
+        )
+        _hist_conc_bruto_limpeza = ler_aba_historico("MapaPAHistorico")
+        if _hist_conc_bruto_limpeza.empty or "Mapa" not in _hist_conc_bruto_limpeza.columns:
+            st.info("Nenhum histórico de CONC registrado ainda.")
+        else:
+            _hist_conc_bruto_limpeza["Mapa"] = _hist_conc_bruto_limpeza["Mapa"].apply(limpar_numero_robusto)
+            mapas_disponiveis_limpeza = sorted(
+                _hist_conc_bruto_limpeza["Mapa"].dropna().unique().tolist(),
+                key=lambda m: int(m) if str(m).isdigit() else 0,
+            )
+            mapas_pra_remover = st.multiselect(
+                "Mapas a apagar do registro histórico (não afeta o VazioPA/VazioPALote nem a conciliação)",
+                mapas_disponiveis_limpeza,
+                key="mapas_pra_remover_conc_hist",
+            )
+            if st.button("🗑️ Remover selecionados do registro", disabled=not mapas_pra_remover):
+                hist_conc_restante = _hist_conc_bruto_limpeza[~_hist_conc_bruto_limpeza["Mapa"].isin(mapas_pra_remover)]
+                salvar_aba_historico("MapaPAHistorico", hist_conc_restante)
+                st.success(f"{len(mapas_pra_remover)} mapa(s) removido(s) do registro.")
+                st.rerun()
+
+    st.divider()
     with st.expander("🧪 Modo Simulação (dados de teste)", expanded=False):
         st.caption("Gera retorno = saída perfeita pra todos os mapas Tianguá/Granja de uma data (via CONC.csv). Grava numa aba separada, nunca mistura com produção.")
         data_simulacao = st.date_input("Data pra simular", value=date.today() - timedelta(days=1), key="data_gerar_simulacao")
@@ -1072,7 +1118,7 @@ with aba_conciliacao:
             # as colunas mínimas pra não quebrar o resto do bloco.
             hist_vazio_pa = pd.DataFrame(columns=["Data", "PA", "Mapa", "Familia", "Caixas", "Garrafas", "Garrafeiras", "Unidades"])
         else:
-            hist_vazio_pa["Mapa"] = hist_vazio_pa["Mapa"].apply(limpa_mapa)
+            hist_vazio_pa["Mapa"] = hist_vazio_pa["Mapa"].apply(limpar_numero_robusto)
             # Se o mapa foi consolidado (coluna MAPA CONSOLIDADO do CONC.csv), soma o
             # retorno de todos os originais que caem no mesmo consolidado antes de comparar
             # — senão cada um bateria errado sozinho contra a Saída combinada dos dois.
