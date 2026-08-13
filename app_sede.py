@@ -674,6 +674,7 @@ with aba_vazio_pa:
                 if linhas_pa:
                     acumular_historico(pd.DataFrame(linhas_pa), ABA_VAZIO_PA_ATIVA, ["Data", "PA", "Mapa", "Familia"])
                     st.success(f"✅ Retorno do mapa {mapa_numero} salvo com sucesso!")
+                    st.rerun()
                 else:
                     st.warning("Nenhuma quantidade foi informada para salvar.")
 
@@ -772,6 +773,7 @@ with aba_vazio_pa:
                 if linhas_lote:
                     acumular_historico(pd.DataFrame(linhas_lote), "VazioPALote", ["Data", "PA", "Mapas", "Familia"])
                     st.success(f"✅ Somado ao total de {len(mapas_lote_auto)} mapas ({', '.join(mapas_lote_auto)})!")
+                    st.rerun()
                 else:
                     st.warning("Nenhuma quantidade foi informada para salvar.")
 
@@ -1044,11 +1046,13 @@ with aba_vazio_pa:
                 st.warning("Nenhum mapa Tianguá/Granja encontrado pra essa data (confira o CONC.csv e o 02.05.01).")
             else:
                 salvar_aba_historico(NOME_ABA_SIMULACAO, df_simulado)
-                st.success(f"{len(df_simulado)} linha(s) simuladas geradas. Ative '🧪 Modo simulação' na sidebar pra ver.")
+                st.success(f"{len(df_simulado)} linha(s) simuladas geradas.")
+                st.rerun()
 
         if col_sim2.button("🗑️ Apagar simulação", use_container_width=True):
             salvar_aba_historico(NOME_ABA_SIMULACAO, pd.DataFrame(columns=["Data", "PA", "Mapa", "Familia", "Caixas", "Garrafas", "Garrafeiras", "Unidades"]))
             st.success("Dados de simulação apagados.")
+            st.rerun()
 
 
 
