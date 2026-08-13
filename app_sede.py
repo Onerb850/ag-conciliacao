@@ -702,9 +702,10 @@ with aba_vazio_pa:
         data_lote_str_atual = data_lote.strftime("%d/%m/%Y")
         mapas_chave_atual = ";".join(mapas_lote_auto) if mapas_lote_auto else ""
 
-        # Busca o que já está salvo pra essa Data+PA+conjunto de mapas — o formulário
-        # é sempre TOTAL ACUMULADO, não incremento. Se já existe algo salvo, mostra o
-        # valor atual nos campos e avisa: digite o TOTAL FINAL, não só o que faltava.
+        # Busca o que já está salvo pra essa Data+PA+conjunto de mapas — só pra
+        # MOSTRAR o total atual (informativo). Os campos abaixo começam em 0: você
+        # digita só a quantidade NOVA de agora, e o sistema soma sozinho com o que
+        # já estava salvo na hora de gravar — sem precisar somar de cabeça.
         valores_existentes_lote = {}
         if mapas_chave_atual:
             hist_lote_atual = ler_aba_historico("VazioPALote")
@@ -718,30 +719,28 @@ with aba_vazio_pa:
                     valores_existentes_lote[r["Familia"]] = r
 
         if valores_existentes_lote:
-            st.warning(
-                "⚠️ Já existe uma conferência salva pra esse PA/Data — os campos abaixo já vêm com o "
-                "TOTAL atual. Se mais AG chegou, digite o TOTAL FINAL (soma de tudo que já foi contado + "
-                "o novo), NÃO só a quantidade que acabou de contar — senão a gravação de agora substitui "
-                "a anterior em vez de somar."
+            resumo_atual = ", ".join(
+                f"{fam}: {int(r['Caixas'])} cx" if fam in REGRAS_VAZIO else f"{fam}: {int(r['Unidades'])} un"
+                for fam, r in valores_existentes_lote.items()
+            )
+            st.info(
+                f"📋 Total já salvo pra esse PA/Data — {resumo_atual}. "
+                "Digite abaixo só a quantidade NOVA que está lançando agora — o sistema soma automaticamente."
             )
 
-        st.markdown("**Caixas Físicas que Retornaram (TOTAL do lote)**")
-        valores_familia_lote = {}
-        for fam in REGRAS_VAZIO:
-            valor_padrao_fam = int(valores_existentes_lote[fam]["Caixas"]) if fam in valores_existentes_lote else 0
-            valores_familia_lote[fam] = st.number_input(
-                rotulo_familia_vazio(fam), min_value=0, step=1, value=valor_padrao_fam,
-                key=f"cx_lote_{fam}_{data_lote_str_atual}_{pa_lote}",
-            )
+        st.markdown("**Caixas Físicas que Retornaram (quantidade NOVA, não o total)**")
+        valores_familia_lote = {
+            fam: st.number_input(rotulo_familia_vazio(fam), min_value=0, step=1, key=f"cx_lote_{fam}")
+            for fam in REGRAS_VAZIO
+        }
 
-        st.markdown("**Outros AG (TOTAL do lote, sem conversão)**")
+        st.markdown("**Outros AG (quantidade NOVA, sem conversão)**")
         cl1, cl2, cl3, cl4, cl5 = st.columns(5)
-        _outros_padrao = lambda nome: int(valores_existentes_lote[nome]["Unidades"]) if nome in valores_existentes_lote else 0
-        chapatex_lote = cl1.number_input("Chapatex (Und)", min_value=0, step=1, value=_outros_padrao("Chapatex"), key=f"outros_lote_chapatex_{data_lote_str_atual}_{pa_lote}")
-        pbr1_lote = cl2.number_input("Pallet PBR1", min_value=0, step=1, value=_outros_padrao("Pallet PBR1"), key=f"outros_lote_pbr1_{data_lote_str_atual}_{pa_lote}")
-        pbr2_lote = cl3.number_input("Pallet PBR2", min_value=0, step=1, value=_outros_padrao("Pallet PBR2"), key=f"outros_lote_pbr2_{data_lote_str_atual}_{pa_lote}")
-        barril30_lote = cl4.number_input("Barril 30L", min_value=0, step=1, value=_outros_padrao("Barril 30L"), key=f"outros_lote_barril30_{data_lote_str_atual}_{pa_lote}")
-        barril50_lote = cl5.number_input("Barril 50L", min_value=0, step=1, value=_outros_padrao("Barril 50L"), key=f"outros_lote_barril50_{data_lote_str_atual}_{pa_lote}")
+        chapatex_lote = cl1.number_input("Chapatex (Und)", min_value=0, step=1, key="outros_lote_chapatex")
+        pbr1_lote = cl2.number_input("Pallet PBR1", min_value=0, step=1, key="outros_lote_pbr1")
+        pbr2_lote = cl3.number_input("Pallet PBR2", min_value=0, step=1, key="outros_lote_pbr2")
+        barril30_lote = cl4.number_input("Barril 30L", min_value=0, step=1, key="outros_lote_barril30")
+        barril50_lote = cl5.number_input("Barril 50L", min_value=0, step=1, key="outros_lote_barril50")
 
         if st.form_submit_button("Salvar conferência em lote"):
             if len(mapas_lote_auto) < 2:
@@ -752,7 +751,9 @@ with aba_vazio_pa:
                 gf_600_lote = valores_familia_lote.get("600ml", 0) + valores_familia_lote.get("Verde 600", 0)
                 linhas_lote = []
 
-                for familia, qtd_cx in valores_familia_lote.items():
+                for familia, qtd_cx_nova in valores_familia_lote.items():
+                    caixas_existentes = int(valores_existentes_lote[familia]["Caixas"]) if familia in valores_existentes_lote else 0
+                    qtd_cx = caixas_existentes + qtd_cx_nova
                     if qtd_cx > 0:
                         r = REGRAS_VAZIO[familia]
                         gf = gf_600_lote if familia == "600ml" else (0 if familia == "Verde 600" else qtd_cx * r["garrafeiras_por_cx"])
@@ -761,10 +762,12 @@ with aba_vazio_pa:
                             "Caixas": qtd_cx, "Garrafas": qtd_cx * r["garrafas_por_cx"], "Garrafeiras": gf, "Unidades": 0,
                         })
 
-                for familia_outros, qtd_un in [
+                for familia_outros, qtd_un_nova in [
                     ("Chapatex", chapatex_lote), ("Pallet PBR1", pbr1_lote), ("Pallet PBR2", pbr2_lote),
                     ("Barril 30L", barril30_lote), ("Barril 50L", barril50_lote),
                 ]:
+                    unidades_existentes = int(valores_existentes_lote[familia_outros]["Unidades"]) if familia_outros in valores_existentes_lote else 0
+                    qtd_un = unidades_existentes + qtd_un_nova
                     if qtd_un > 0:
                         linhas_lote.append({
                             "Data": data_str_lote, "PA": pa_lote, "Mapas": mapas_chave, "Familia": familia_outros,
@@ -773,7 +776,7 @@ with aba_vazio_pa:
 
                 if linhas_lote:
                     acumular_historico(pd.DataFrame(linhas_lote), "VazioPALote", ["Data", "PA", "Mapas", "Familia"])
-                    st.success(f"✅ Lote de {len(mapas_lote_auto)} mapas ({', '.join(mapas_lote_auto)}) salvo com sucesso!")
+                    st.success(f"✅ Somado ao total de {len(mapas_lote_auto)} mapas ({', '.join(mapas_lote_auto)})!")
                 else:
                     st.warning("Nenhuma quantidade foi informada para salvar.")
 
