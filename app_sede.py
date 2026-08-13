@@ -667,19 +667,49 @@ with aba_vazio_pa:
         st.warning(f"Nenhum mapa cadastrado pra {pa_lote} em {data_lote.strftime('%d/%m/%Y')} na planilha 'Mapa PA'.")
 
     with st.form("form_vazio_pa_lote", clear_on_submit=True):
+        data_lote_str_atual = data_lote.strftime("%d/%m/%Y")
+        mapas_chave_atual = ";".join(mapas_lote_auto) if mapas_lote_auto else ""
+
+        # Busca o que já está salvo pra essa Data+PA+conjunto de mapas — o formulário
+        # é sempre TOTAL ACUMULADO, não incremento. Se já existe algo salvo, mostra o
+        # valor atual nos campos e avisa: digite o TOTAL FINAL, não só o que faltava.
+        valores_existentes_lote = {}
+        if mapas_chave_atual:
+            hist_lote_atual = ler_aba_historico("VazioPALote")
+            if not hist_lote_atual.empty:
+                filtro_lote_atual = (
+                    (hist_lote_atual["Data"] == data_lote_str_atual)
+                    & (hist_lote_atual["PA"] == pa_lote)
+                    & (hist_lote_atual["Mapas"] == mapas_chave_atual)
+                )
+                for _, r in hist_lote_atual[filtro_lote_atual].iterrows():
+                    valores_existentes_lote[r["Familia"]] = r
+
+        if valores_existentes_lote:
+            st.warning(
+                "⚠️ Já existe uma conferência salva pra esse PA/Data — os campos abaixo já vêm com o "
+                "TOTAL atual. Se mais AG chegou, digite o TOTAL FINAL (soma de tudo que já foi contado + "
+                "o novo), NÃO só a quantidade que acabou de contar — senão a gravação de agora substitui "
+                "a anterior em vez de somar."
+            )
+
         st.markdown("**Caixas Físicas que Retornaram (TOTAL do lote)**")
-        valores_familia_lote = {
-            fam: st.number_input(rotulo_familia_vazio(fam), min_value=0, step=1, key=f"cx_lote_{fam}")
-            for fam in REGRAS_VAZIO
-        }
+        valores_familia_lote = {}
+        for fam in REGRAS_VAZIO:
+            valor_padrao_fam = int(valores_existentes_lote[fam]["Caixas"]) if fam in valores_existentes_lote else 0
+            valores_familia_lote[fam] = st.number_input(
+                rotulo_familia_vazio(fam), min_value=0, step=1, value=valor_padrao_fam,
+                key=f"cx_lote_{fam}_{data_lote_str_atual}_{pa_lote}",
+            )
 
         st.markdown("**Outros AG (TOTAL do lote, sem conversão)**")
         cl1, cl2, cl3, cl4, cl5 = st.columns(5)
-        chapatex_lote = cl1.number_input("Chapatex (Und)", min_value=0, step=1, key="outros_lote_chapatex")
-        pbr1_lote = cl2.number_input("Pallet PBR1", min_value=0, step=1, key="outros_lote_pbr1")
-        pbr2_lote = cl3.number_input("Pallet PBR2", min_value=0, step=1, key="outros_lote_pbr2")
-        barril30_lote = cl4.number_input("Barril 30L", min_value=0, step=1, key="outros_lote_barril30")
-        barril50_lote = cl5.number_input("Barril 50L", min_value=0, step=1, key="outros_lote_barril50")
+        _outros_padrao = lambda nome: int(valores_existentes_lote[nome]["Unidades"]) if nome in valores_existentes_lote else 0
+        chapatex_lote = cl1.number_input("Chapatex (Und)", min_value=0, step=1, value=_outros_padrao("Chapatex"), key=f"outros_lote_chapatex_{data_lote_str_atual}_{pa_lote}")
+        pbr1_lote = cl2.number_input("Pallet PBR1", min_value=0, step=1, value=_outros_padrao("Pallet PBR1"), key=f"outros_lote_pbr1_{data_lote_str_atual}_{pa_lote}")
+        pbr2_lote = cl3.number_input("Pallet PBR2", min_value=0, step=1, value=_outros_padrao("Pallet PBR2"), key=f"outros_lote_pbr2_{data_lote_str_atual}_{pa_lote}")
+        barril30_lote = cl4.number_input("Barril 30L", min_value=0, step=1, value=_outros_padrao("Barril 30L"), key=f"outros_lote_barril30_{data_lote_str_atual}_{pa_lote}")
+        barril50_lote = cl5.number_input("Barril 50L", min_value=0, step=1, value=_outros_padrao("Barril 50L"), key=f"outros_lote_barril50_{data_lote_str_atual}_{pa_lote}")
 
         if st.form_submit_button("Salvar conferência em lote"):
             if len(mapas_lote_auto) < 2:
@@ -1637,7 +1667,10 @@ with aba_fechamento:
     df_fechamento_todas_datas = pd.concat(partes_fechamento, ignore_index=True) if partes_fechamento else pd.DataFrame(columns=["Mapa", "Item", "Diferença", "Data", "PA", "FamiliaConv"])
 
     pas_disponiveis = sorted(df_fechamento_todas_datas["PA"].unique().tolist()) if not df_fechamento_todas_datas.empty else ["Tianguá", "Granja", "Sede"]
-    pas_escolhidas = st.multiselect("Filtrar por PA", pas_disponiveis, default=pas_disponiveis, key="fechamento_pas_filtro")
+    pas_escolhidas = st.multiselect(
+        "Filtrar por PA", pas_disponiveis, default=pas_disponiveis,
+        key=f"fechamento_pas_filtro_{data_fechamento_str}_{modo_simulacao}",
+    )
 
     df_fechamento_todas_datas = df_fechamento_todas_datas[df_fechamento_todas_datas["PA"].isin(pas_escolhidas)]
     df_fechamento = df_fechamento_todas_datas[df_fechamento_todas_datas["Data"] == data_fechamento_str].copy()
