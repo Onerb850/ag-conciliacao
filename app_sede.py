@@ -569,7 +569,7 @@ def gerar_simulacao_perfeita(data_alvo) -> pd.DataFrame:
             "Mapa": r["Mapa"],
             "Familia": r["Familia"],
             "Caixas": 0,
-            "Garrafas": int(r["P Vazia"]),
+            "Garrafas": int(r["Qtde_Saida"]),
             "Garrafeiras": 0,
             "Unidades": 0,
         })
