@@ -1059,11 +1059,16 @@ with aba_conciliacao:
 
         # 2. RETORNO DO PA
         hist_vazio_pa = _hist_vazio_pa_bruto.copy()
-        hist_vazio_pa["Mapa"] = hist_vazio_pa["Mapa"].apply(limpa_mapa)
-        # Se o mapa foi consolidado (coluna MAPA CONSOLIDADO do CONC.csv), soma o
-        # retorno de todos os originais que caem no mesmo consolidado antes de comparar
-        # — senão cada um bateria errado sozinho contra a Saída combinada dos dois.
-        hist_vazio_pa["Mapa"] = hist_vazio_pa["Mapa"].apply(resolver_mapa)
+        if "Mapa" not in hist_vazio_pa.columns:
+            # Aba ainda não existe no historico_ag.xlsx (arquivo novo/vazio) — garante
+            # as colunas mínimas pra não quebrar o resto do bloco.
+            hist_vazio_pa = pd.DataFrame(columns=["Data", "PA", "Mapa", "Familia", "Caixas", "Garrafas", "Garrafeiras", "Unidades"])
+        else:
+            hist_vazio_pa["Mapa"] = hist_vazio_pa["Mapa"].apply(limpa_mapa)
+            # Se o mapa foi consolidado (coluna MAPA CONSOLIDADO do CONC.csv), soma o
+            # retorno de todos os originais que caem no mesmo consolidado antes de comparar
+            # — senão cada um bateria errado sozinho contra a Saída combinada dos dois.
+            hist_vazio_pa["Mapa"] = hist_vazio_pa["Mapa"].apply(resolver_mapa)
 
         if "Garrafas" not in hist_vazio_pa.columns: hist_vazio_pa["Garrafas"] = 0
         if "Unidades" not in hist_vazio_pa.columns: hist_vazio_pa["Unidades"] = 0
