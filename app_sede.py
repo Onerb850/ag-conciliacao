@@ -447,8 +447,30 @@ MAPAS_PA_CONC = {m for m, pa in MAPA_PA_CLASSIFICACAO.items() if pa in ("Tiangu�
 MAPAS_SEDE_CONC = {m for m, pa in MAPA_PA_CLASSIFICACAO.items() if pa == "Sede"}
 
 
-# --- 03.07.13: carrega e filtra pelo período escolhido, sem gravar nada no Drive ---
+# --- 03.07.13: carrega, limpa, e ACUMULA num histórico permanente (só as colunas que
+# o app realmente usa — nada de Hora, Usuario PCF, Observacoes, Transportadora etc.,
+# pra manter o historico_ag.xlsx enxuto). O relatório nunca é filtrado por período — o
+# CONC.csv já dita quais mapas e datas entram em cada conciliação; aqui só se consulta
+# por número de mapa.
+NOME_ABA_RELATORIO_HISTORICO = "Relatorio0307Historico"
+COLUNAS_RELATORIO_UTEIS = ["Data", "Mapa", "Material", "Descricao", "P Vazia", "R Vazio"] + [
+    c for _, cp, cr in CATEGORIAS_AG_EXTRA for c in (cp, cr)
+]
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _ingerir_relatorio_no_historico(_df_relatorio_limpo: pd.DataFrame) -> pd.DataFrame:
+    """Acumula o 03.07.13 atual (só as colunas úteis) num histórico permanente — assim,
+    mesmo substituindo o arquivo todo dia, um mapa antigo ainda não resolvido continua
+    disponível pra consulta. Cacheado 5 min pra não gravar no Drive a cada interação."""
+    colunas_presentes = [c for c in COLUNAS_RELATORIO_UTEIS if c in _df_relatorio_limpo.columns]
+    return acumular_historico(_df_relatorio_limpo[colunas_presentes], NOME_ABA_RELATORIO_HISTORICO, ["Data", "Mapa", "Material"])
+
+
 df_mapas_ag = carregar(ARQUIVO_MAPAS_AG)
+colunas_numericas_relatorio = ["P Vazia", "R Vazio"] + [
+    c for _, cp, cr in CATEGORIAS_AG_EXTRA for c in (cp, cr)
+]
 if df_mapas_ag is not None:
     df_mapas_ag = df_mapas_ag.copy()
     df_mapas_ag.columns = df_mapas_ag.columns.str.strip()
@@ -459,9 +481,6 @@ if df_mapas_ag is not None:
     if "Descricao" in df_mapas_ag.columns:
         df_mapas_ag["Descricao"] = df_mapas_ag["Descricao"].astype(str).str.strip()
 
-    colunas_numericas_relatorio = ["P Vazia", "R Vazio"] + [
-        c for _, cp, cr in CATEGORIAS_AG_EXTRA for c in (cp, cr)
-    ]
     for col_qtd in colunas_numericas_relatorio:
         if col_qtd in df_mapas_ag.columns:
             df_mapas_ag[col_qtd] = pd.to_numeric(df_mapas_ag[col_qtd], errors="coerce").fillna(0)
@@ -470,11 +489,24 @@ if df_mapas_ag is not None:
         codigos_validos = set(df_de_material["Promax"].unique())
         df_mapas_ag = df_mapas_ag[df_mapas_ag["Material"].isin(codigos_validos)]
 
-    # O relatório 03.07.13 nunca é filtrado por período — o CONC.csv já dita quais
-    # mapas e datas entram em cada conciliação; aqui só se consulta por número de mapa.
-    df_mapas_ag_sem_filtro_data = df_mapas_ag
+    df_mapas_ag_sem_filtro_data = _ingerir_relatorio_no_historico(df_mapas_ag)
 else:
-    df_mapas_ag_sem_filtro_data = None
+    df_mapas_ag_sem_filtro_data = ler_aba_historico(NOME_ABA_RELATORIO_HISTORICO)
+    if df_mapas_ag_sem_filtro_data.empty:
+        df_mapas_ag_sem_filtro_data = None
+
+# O Excel guarda/relê "Mapa"/"Material" como número quando o texto parece um número
+# puro — corrompe o tipo (vira NaN/float) igual já vimos acontecer com o CONC.csv.
+# Relimpa sempre que o histórico vem de volta do Drive.
+if df_mapas_ag_sem_filtro_data is not None and not df_mapas_ag_sem_filtro_data.empty:
+    for _col_relimpar in ["Mapa", "Material"]:
+        if _col_relimpar in df_mapas_ag_sem_filtro_data.columns:
+            df_mapas_ag_sem_filtro_data[_col_relimpar] = df_mapas_ag_sem_filtro_data[_col_relimpar].apply(limpa_mapa)
+    df_mapas_ag_sem_filtro_data = df_mapas_ag_sem_filtro_data.dropna(subset=["Mapa"])
+    df_mapas_ag_sem_filtro_data = df_mapas_ag_sem_filtro_data[df_mapas_ag_sem_filtro_data["Mapa"].str.lower() != "nan"]
+    for _col_num_relimpar in colunas_numericas_relatorio:
+        if _col_num_relimpar in df_mapas_ag_sem_filtro_data.columns:
+            df_mapas_ag_sem_filtro_data[_col_num_relimpar] = pd.to_numeric(df_mapas_ag_sem_filtro_data[_col_num_relimpar], errors="coerce").fillna(0)
 
 _periodo_str = f"{data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}"
 with st.sidebar:
