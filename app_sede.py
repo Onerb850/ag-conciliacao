@@ -4,7 +4,6 @@ from datetime import date, timedelta
 
 from comum import (
     ARQUIVO_DE_MATERIAL,
-    ARQUIVO_MAPAS_AG,
     PASTA_PROJETO,
     carregar,
     ler_aba_historico,
@@ -15,12 +14,10 @@ from comum import (
     fator_conversao_caixas,
     cor_linha_status,
     formata_qtd_fisica,
-    formata_diferenca_fisica,
     com_apelido,
     rotulo_familia_vazio,
     montar_lookup_ag_por_codigo,
     familia_tipo_por_codigo,
-    CATEGORIAS_AG_EXTRA,
 )
 
 # Planilha de referência Data+Mapa->PA (colunas DATA, MAPA, PONTO DE APOIO). Sobe na
@@ -255,22 +252,8 @@ def renderizar_tabela_limpa(df: pd.DataFrame, colunas: list[str], col_status: st
     st.markdown(html_tabela, unsafe_allow_html=True)
 
 
-def status_por_mapa(df: pd.DataFrame, ordem_prioridade: list[str]) -> pd.Series:
-    """Resume os status de TODAS as linhas (famílias/itens) de cada mapa num status só
-    por mapa — usando a ordem de prioridade dada (primeiro item = pior/mais urgente,
-    último = status "bom"). Um mapa com qualquer linha "Faltou" conta como Faltou,
-    mesmo que as outras famílias tenham batido — só conta como Bateu se TODAS baterem."""
-    def _pior(serie_status: pd.Series) -> str:
-        valores = set(serie_status)
-        for status in ordem_prioridade:
-            if status in valores:
-                return status
-        return ordem_prioridade[-1]
-    return df.groupby("Mapa")["Status"].apply(_pior)
-
-
 with st.sidebar:
-    st.caption(f"Fonte: {ARQUIVO_MAPAS_AG.name} (atualiza sozinho a cada 5 min)")
+    st.caption("Fonte: 02.05.01.csv (atualiza sozinho a cada 5 min)")
     if st.button("🔄 Recarregar tela", width="stretch"):
         st.rerun()
     intervalo_datas = st.date_input(
@@ -435,6 +418,59 @@ def buscar_mapas_por_data_pa(data_alvo, pa_alvo: str) -> list[str]:
 
 
 # =========================================================================
+# 02.05.01.csv — usado SÓ como fonte de Saída pra Previsão de Contagem (é puro
+# "o que saiu tem que voltar", código de Operação 554). Sede e Outras Categorias
+# continuam usando o 03.07.13, que traz Retorno e as categorias extras que o
+# 02.05.01 não tem. Acumula num histórico próprio, mesmo padrão do CONC/03.07.13,
+# pra sobreviver à substituição diária do arquivo.
+# =========================================================================
+ARQUIVO_020501 = PASTA_PROJETO / "02.05.01.csv"
+NOME_ABA_020501_HISTORICO = "Relatorio020501Historico"
+
+
+def parse_qtde_entrada_robusta(serie: pd.Series) -> pd.Series:
+    """'2.592/00' -> 2592.00 — formato do 02.05.01: '.' separa milhar, '/' faz as
+    vezes de vírgula decimal."""
+    s = serie.astype(str).str.strip()
+    s = s.str.replace(".", "", regex=False)
+    s = s.str.replace("/", ".", regex=False)
+    return pd.to_numeric(s, errors="coerce").fillna(0)
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _ingerir_020501_no_historico(_df_020501_limpo: pd.DataFrame) -> pd.DataFrame:
+    return acumular_historico(_df_020501_limpo, NOME_ABA_020501_HISTORICO, ["Data", "Mapa", "Material"])
+
+
+df_020501 = carregar(ARQUIVO_020501)
+if df_020501 is not None and not df_020501.empty:
+    df_020501 = df_020501.copy()
+    df_020501.columns = df_020501.columns.str.strip()
+    if "Código Operação" in df_020501.columns:
+        df_020501 = df_020501[pd.to_numeric(df_020501["Código Operação"], errors="coerce") == 554]
+    if not df_020501.empty:
+        df_020501["Mapa"] = df_020501["Mapa"].apply(limpar_numero_robusto)
+        df_020501["Material"] = df_020501["Item"].apply(limpar_numero_robusto)
+        df_020501["Descricao"] = df_020501["Descrição"].astype(str).str.strip() if "Descrição" in df_020501.columns else ""
+        df_020501["Qtde_Saida"] = parse_qtde_entrada_robusta(df_020501["Qtde Entrada"])
+        _dt_020501 = pd.to_datetime(df_020501["Data"], dayfirst=True, errors="coerce")
+        df_020501["Data"] = _dt_020501.dt.strftime("%d/%m/%Y")
+        df_020501 = df_020501.groupby(["Data", "Mapa", "Material", "Descricao"], as_index=False)["Qtde_Saida"].sum()
+        df_020501_historico = _ingerir_020501_no_historico(df_020501)
+    else:
+        df_020501_historico = ler_aba_historico(NOME_ABA_020501_HISTORICO)
+else:
+    df_020501_historico = ler_aba_historico(NOME_ABA_020501_HISTORICO)
+
+if df_020501_historico is not None and not df_020501_historico.empty:
+    for _col_020501 in ["Mapa", "Material"]:
+        if _col_020501 in df_020501_historico.columns:
+            df_020501_historico[_col_020501] = df_020501_historico[_col_020501].apply(limpar_numero_robusto)
+    if "Qtde_Saida" in df_020501_historico.columns:
+        df_020501_historico["Qtde_Saida"] = pd.to_numeric(df_020501_historico["Qtde_Saida"], errors="coerce").fillna(0)
+
+
+# =========================================================================
 # CONC.csv é a fonte única de verdade de QUAIS MAPAS e QUAIS DATAS entram em
 # cada conciliação — o relatório 03.07.13 só é usado pra consultar valores por
 # número de mapa, nunca pra decidir se um mapa entra ou não. O filtro de
@@ -458,89 +494,25 @@ if df_mapa_pa_periodo is not None and not df_mapa_pa_periodo.empty and "PA" in d
 MAPAS_PA_CONC = {m for m, pa in MAPA_PA_CLASSIFICACAO.items() if pa in ("Tianguá", "Granja")}
 MAPAS_SEDE_CONC = {m for m, pa in MAPA_PA_CLASSIFICACAO.items() if pa == "Sede"}
 
-
-# --- 03.07.13: carrega, limpa, e ACUMULA num histórico permanente (só as colunas que
-# o app realmente usa — nada de Hora, Usuario PCF, Observacoes, Transportadora etc.,
-# pra manter o historico_ag.xlsx enxuto). O relatório nunca é filtrado por período — o
-# CONC.csv já dita quais mapas e datas entram em cada conciliação; aqui só se consulta
-# por número de mapa.
-NOME_ABA_RELATORIO_HISTORICO = "Relatorio0307Historico"
-COLUNAS_RELATORIO_UTEIS = ["Data", "Mapa", "Material", "Descricao", "P Vazia", "R Vazio"] + [
-    c for _, cp, cr in CATEGORIAS_AG_EXTRA for c in (cp, cr)
-]
-
-
-@st.cache_data(show_spinner=False, ttl=300)
-def _ingerir_relatorio_no_historico(_df_relatorio_limpo: pd.DataFrame) -> pd.DataFrame:
-    """Acumula o 03.07.13 atual (só as colunas úteis) num histórico permanente — assim,
-    mesmo substituindo o arquivo todo dia, um mapa antigo ainda não resolvido continua
-    disponível pra consulta. Cacheado 5 min pra não gravar no Drive a cada interação."""
-    colunas_presentes = [c for c in COLUNAS_RELATORIO_UTEIS if c in _df_relatorio_limpo.columns]
-    return acumular_historico(_df_relatorio_limpo[colunas_presentes], NOME_ABA_RELATORIO_HISTORICO, ["Data", "Mapa", "Material"])
-
-
-df_mapas_ag = carregar(ARQUIVO_MAPAS_AG)
-colunas_numericas_relatorio = ["P Vazia", "R Vazio"] + [
-    c for _, cp, cr in CATEGORIAS_AG_EXTRA for c in (cp, cr)
-]
-if df_mapas_ag is not None:
-    df_mapas_ag = df_mapas_ag.copy()
-    df_mapas_ag.columns = df_mapas_ag.columns.str.strip()
-    if "Material" in df_mapas_ag.columns:
-        df_mapas_ag["Material"] = df_mapas_ag["Material"].apply(limpar_numero_robusto)
-    if "Mapa" in df_mapas_ag.columns:
-        df_mapas_ag["Mapa"] = df_mapas_ag["Mapa"].apply(limpar_numero_robusto)
-    if "Descricao" in df_mapas_ag.columns:
-        df_mapas_ag["Descricao"] = df_mapas_ag["Descricao"].astype(str).str.strip()
-
-    for col_qtd in colunas_numericas_relatorio:
-        if col_qtd in df_mapas_ag.columns:
-            df_mapas_ag[col_qtd] = pd.to_numeric(df_mapas_ag[col_qtd], errors="coerce").fillna(0)
-
-    if df_de_material is not None and "Material" in df_mapas_ag.columns:
-        codigos_validos = set(df_de_material["Promax"].unique())
-        df_mapas_ag = df_mapas_ag[df_mapas_ag["Material"].isin(codigos_validos)]
-
-    df_mapas_ag_sem_filtro_data = _ingerir_relatorio_no_historico(df_mapas_ag)
-else:
-    df_mapas_ag_sem_filtro_data = ler_aba_historico(NOME_ABA_RELATORIO_HISTORICO)
-    if df_mapas_ag_sem_filtro_data.empty:
-        df_mapas_ag_sem_filtro_data = None
-
-# O Excel guarda/relê "Mapa"/"Material" como número quando o texto parece um número
-# puro — corrompe o tipo (vira NaN/float) igual já vimos acontecer com o CONC.csv.
-# Relimpa sempre que o histórico vem de volta do Drive.
-if df_mapas_ag_sem_filtro_data is not None and not df_mapas_ag_sem_filtro_data.empty:
-    for _col_relimpar in ["Mapa", "Material"]:
-        if _col_relimpar in df_mapas_ag_sem_filtro_data.columns:
-            df_mapas_ag_sem_filtro_data[_col_relimpar] = df_mapas_ag_sem_filtro_data[_col_relimpar].apply(limpar_numero_robusto)
-    df_mapas_ag_sem_filtro_data = df_mapas_ag_sem_filtro_data.dropna(subset=["Mapa"])
-    df_mapas_ag_sem_filtro_data = df_mapas_ag_sem_filtro_data[df_mapas_ag_sem_filtro_data["Mapa"].str.lower() != "nan"]
-    for _col_num_relimpar in colunas_numericas_relatorio:
-        if _col_num_relimpar in df_mapas_ag_sem_filtro_data.columns:
-            df_mapas_ag_sem_filtro_data[_col_num_relimpar] = pd.to_numeric(df_mapas_ag_sem_filtro_data[_col_num_relimpar], errors="coerce").fillna(0)
-
 _periodo_str = f"{data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}"
 with st.sidebar:
-    if df_mapas_ag is None:
-        st.error(f"Não encontrei '{ARQUIVO_MAPAS_AG.name}' no Google Drive.")
-    elif df_mapa_pa is None or df_mapa_pa.empty:
+    if df_mapa_pa is None or df_mapa_pa.empty:
         st.error(f"Não encontrei '{ARQUIVO_MAPA_PA.name}' no Google Drive nem histórico acumulado ainda.")
     else:
         st.success(
-            f"{ARQUIVO_MAPAS_AG.name}: {len(df_mapas_ag)} linha(s). "
+            f"{ARQUIVO_020501.name}: {len(df_020501_historico) if df_020501_historico is not None else 0} linha(s) acumuladas. "
             f"CONC.csv: {len(MAPA_PA_CLASSIFICACAO)} mapa(s) no período ({_periodo_str})."
         )
 
-        # Verificação de integridade: todo mapa do CONC.csv deveria existir no
-        # 03.07.13 — se não existir, a Saída dele conta como 0 (não "falta", só
-        # invisível), o que pode mascarar ou distorcer números de conciliação.
-        mapas_conc_resolvidos = set(MAPA_PA_CLASSIFICACAO.keys())
-        mapas_no_relatorio = set(df_mapas_ag_sem_filtro_data["Mapa"].unique()) if df_mapas_ag_sem_filtro_data is not None and not df_mapas_ag_sem_filtro_data.empty else set()
-        mapas_conc_sem_relatorio = mapas_conc_resolvidos - mapas_no_relatorio
+        # Verificação de integridade: todo mapa do CONC.csv (Tianguá, Granja e Sede)
+        # deveria existir no 02.05.01 — única fonte de Saída do app agora. Se não
+        # existir, a Saída conta como 0 (não "falta", só invisível), o que pode
+        # mascarar ou distorcer números de conciliação/previsão.
+        mapas_no_020501 = set(df_020501_historico["Mapa"].unique()) if df_020501_historico is not None and not df_020501_historico.empty else set()
+        mapas_conc_sem_relatorio = set(MAPA_PA_CLASSIFICACAO.keys()) - mapas_no_020501
 
         if mapas_conc_sem_relatorio:
-            st.warning(f"⚠️ {len(mapas_conc_sem_relatorio)} mapa(s) do CONC.csv ainda não estão no 03.07.13.")
+            st.warning(f"⚠️ {len(mapas_conc_sem_relatorio)} mapa(s) do CONC.csv ainda não estão no 02.05.01.")
             with st.expander("Ver quais (agrupado por PA)"):
                 mapas_faltantes_por_pa: dict[str, list[str]] = {}
                 for m in mapas_conc_sem_relatorio:
@@ -550,7 +522,7 @@ with st.sidebar:
                     st.markdown(f"**{pa_nome}** ({len(lista_ordenada)}):")
                     st.caption(", ".join(lista_ordenada))
         else:
-            st.caption("✅ Todos os mapas do CONC.csv já estão no 03.07.13.")
+            st.caption("✅ Todos os mapas do CONC.csv já estão no 02.05.01.")
 
 
 def gerar_simulacao_perfeita(data_alvo) -> pd.DataFrame:
@@ -558,7 +530,7 @@ def gerar_simulacao_perfeita(data_alvo) -> pd.DataFrame:
     retorno = saída exata (garrafas soltas, sem caixas/garrafeiras/unidades) — simula
     uma conferência 100% perfeita, só pra teste visual. Ignora consolidação de mapas
     (rara em Tianguá/Granja) usando direto o número resolvido."""
-    if df_mapa_pa is None or df_mapa_pa.empty or df_mapas_ag_sem_filtro_data is None or df_mapas_ag_sem_filtro_data.empty:
+    if df_mapa_pa is None or df_mapa_pa.empty or df_020501_historico is None or df_020501_historico.empty:
         return pd.DataFrame()
 
     data_str = data_alvo.strftime("%d/%m/%Y")
@@ -573,15 +545,15 @@ def gerar_simulacao_perfeita(data_alvo) -> pd.DataFrame:
     mapas_pa_sim["PA"] = mapas_pa_sim["PA"].str.upper().map(pa_normalizado)
     pa_lookup_sim = mapas_pa_sim.groupby("MapaResolvido")["PA"].first().to_dict()
 
-    familia_tipo_sim = df_mapas_ag_sem_filtro_data["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
-    df_sim = df_mapas_ag_sem_filtro_data.copy()
+    familia_tipo_sim = df_020501_historico["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
+    df_sim = df_020501_historico.copy()
     df_sim["Familia"] = familia_tipo_sim.apply(lambda ft: ft[0])
     df_sim["Tipo"] = familia_tipo_sim.apply(lambda ft: ft[1])
     df_sim = df_sim[(df_sim["Familia"] != "Outro") & (df_sim["Tipo"] != "Garrafeira")]
     df_sim = df_sim[df_sim["Mapa"].isin(mapas_pa_sim["MapaResolvido"].unique())]
 
-    saida_sim = df_sim.groupby(["Mapa", "Familia"])["P Vazia"].sum().reset_index()
-    saida_sim = saida_sim[saida_sim["P Vazia"] > 0]
+    saida_sim = df_sim.groupby(["Mapa", "Familia"])["Qtde_Saida"].sum().reset_index()
+    saida_sim = saida_sim[saida_sim["Qtde_Saida"] > 0]
 
     linhas = []
     for _, r in saida_sim.iterrows():
@@ -597,8 +569,8 @@ def gerar_simulacao_perfeita(data_alvo) -> pd.DataFrame:
         })
     return pd.DataFrame(linhas)
 
-aba_vazio_pa, aba_conciliacao, aba_conciliacao_sede, aba_categorias_extra, aba_fechamento = st.tabs(
-    ["Vazio por PA", "Conciliação Mapas PA", "Conciliação Mapas Sede", "Outras Categorias", "📊 Fechamento"]
+aba_vazio_pa, aba_conciliacao, aba_conciliacao_sede, aba_fechamento = st.tabs(
+    ["Vazio por PA", "Conciliação Mapas PA", "Previsão Sede", "📊 Fechamento"]
 )
 
 # Roteamento entre as abas agora vem do CONC.csv (MAPA_PA_CLASSIFICACAO), não mais de
@@ -1063,7 +1035,7 @@ with aba_vazio_pa:
         if col_sim1.button("🧪 Gerar simulação", use_container_width=True):
             df_simulado = gerar_simulacao_perfeita(data_simulacao)
             if df_simulado.empty:
-                st.warning("Nenhum mapa Tianguá/Granja encontrado pra essa data (confira o CONC.csv e o 03.07.13).")
+                st.warning("Nenhum mapa Tianguá/Granja encontrado pra essa data (confira o CONC.csv e o 02.05.01).")
             else:
                 salvar_aba_historico(NOME_ABA_SIMULACAO, df_simulado)
                 st.success(f"{len(df_simulado)} linha(s) simuladas geradas. Ative '🧪 Modo simulação' na sidebar pra ver.")
@@ -1079,27 +1051,28 @@ with aba_vazio_pa:
 # ABA DE CONCILIAÇÃO POR MAPA PA (VENDA x RETORNO CONFERENTE)
 # =========================================================================
 with aba_conciliacao:
-    st.header("⚖️ Conciliação de Mapas PA (Saída vs. Retorno conferente)")
+    st.header("⚖️ Conciliação de Mapas PA (Saída 02.05.01 vs. Retorno conferente)")
     st.caption("Mapas Tianguá/Granja do CONC.csv — aparecem mesmo sem conferência ainda.")
 
     df_concil = pd.DataFrame()  # fallback — usado pela aba Fechamento mesmo sem dados aqui
-    if df_mapas_ag_sem_filtro_data is None or df_mapas_ag_sem_filtro_data.empty or not MAPAS_PA_CONC:
-        st.info("⚠️ Aguardando dados. É necessário ter o relatório 03.07.13 e o CONC.csv (com mapas Tianguá/Granja) carregados.")
+    if df_020501_historico is None or df_020501_historico.empty or not MAPAS_PA_CONC:
+        st.info("⚠️ Aguardando dados. É necessário ter o relatório 02.05.01 e o CONC.csv (com mapas Tianguá/Granja) carregados.")
     else:
-        # 1. VENDA (SAÍDA) — classificada pelo Código do Material via De Material.xlsx.
-        # Usa df_mapas_ag_sem_filtro_data (relatório sem filtro de data — só o número do
-        # mapa importa) e MAPAS_PA_CONC (o CONC.csv é quem dita quais mapas entram aqui,
+        # 1. VENDA (SAÍDA) — agora vem do 02.05.01 (código 554), não mais do 03.07.13.
+        # Classificada pelo Código do Material via De Material.xlsx. Usa
+        # df_020501_historico (acumulado, sem filtro de período — só o número do mapa
+        # importa) e MAPAS_PA_CONC (o CONC.csv é quem dita quais mapas entram aqui,
         # independente de já terem sido conferidos ou não).
         # Só entram garrafa/barril soltos (não garrafeira), igual ao Retorno digitado
         # manualmente, que também só conta Garrafas+Unidades (nunca Garrafeiras).
-        familia_tipo_venda = df_mapas_ag_sem_filtro_data["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
-        df_venda_ag = df_mapas_ag_sem_filtro_data.copy()
+        familia_tipo_venda = df_020501_historico["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
+        df_venda_ag = df_020501_historico.copy()
         df_venda_ag["Familia"] = familia_tipo_venda.apply(lambda ft: ft[0])
         df_venda_ag["Tipo"] = familia_tipo_venda.apply(lambda ft: ft[1])
         df_venda_ag = df_venda_ag[(df_venda_ag["Familia"] != "Outro") & (df_venda_ag["Tipo"] != "Garrafeira")]
 
-        venda_agg_todos = df_venda_ag.groupby(["Mapa", "Familia"])["P Vazia"].sum().reset_index()
-        venda_agg_todos.rename(columns={"P Vazia": "Qtd_Saida_Unidades"}, inplace=True)
+        venda_agg_todos = df_venda_ag.groupby(["Mapa", "Familia"])["Qtde_Saida"].sum().reset_index()
+        venda_agg_todos.rename(columns={"Qtde_Saida": "Qtd_Saida_Unidades"}, inplace=True)
         # Mapas em lote são tratados à parte mais abaixo — tira eles daqui pra não
         # duplicar (uma vez como linha individual, outra dentro da linha do lote).
         _mapas_em_lote_resolvidos = set(resolver_mapas(MAPAS_EM_LOTE))
@@ -1300,8 +1273,8 @@ with aba_conciliacao:
 # ABA DE CONCILIAÇÃO POR MAPA SEDE (Previsto x Realizado — sem conferente físico)
 # =========================================================================
 with aba_conciliacao_sede:
-    st.header("🏢 Conciliação de Mapas Sede (Previsto vs. Realizado)")
-    st.caption("Total Previsto x Total Realizado. Só mapas classificados como SEDE no CONC.csv.")
+    st.header("🏢 Previsão Sede")
+    st.caption("Só previsão do que deveria voltar — sem comparação, sem conferente.")
     df_concil_sede = pd.DataFrame()  # fallback — usado pela aba Fechamento mesmo sem dados aqui
 
     # =========================================================================
@@ -1321,8 +1294,8 @@ with aba_conciliacao_sede:
 
     if df_mapa_pa is None or df_mapa_pa.empty:
         st.error(f"Não encontrei '{ARQUIVO_MAPA_PA.name}' no Google Drive — a previsão usa essa planilha pra saber QUAIS mapas considerar naquele dia.")
-    elif df_mapas_ag_sem_filtro_data is None or df_mapas_ag_sem_filtro_data.empty:
-        st.info("⚠️ Aguardando dados do relatório 03.07.13.")
+    elif df_020501_historico is None or df_020501_historico.empty:
+        st.info("⚠️ Aguardando dados do relatório 02.05.01.")
     else:
         data_previsao_str = data_previsao.strftime("%d/%m/%Y")
         mapas_previsao_originais = sorted(
@@ -1336,7 +1309,7 @@ with aba_conciliacao_sede:
         if not mapas_previsao:
             st.warning(f"Nenhum mapa cadastrado em {data_previsao_str} na planilha '{ARQUIVO_MAPA_PA.name}'.")
         else:
-            df_previsao = df_mapas_ag_sem_filtro_data[df_mapas_ag_sem_filtro_data["Mapa"].isin(mapas_previsao)].copy()
+            df_previsao = df_020501_historico[df_020501_historico["Mapa"].isin(mapas_previsao)].copy()
             mapas_encontrados = set(df_previsao["Mapa"].unique())
             mapas_faltando = [m for m in mapas_previsao if m not in mapas_encontrados]
 
@@ -1348,7 +1321,8 @@ with aba_conciliacao_sede:
             if df_previsao.empty:
                 st.info("Nenhum dos mapas dessa data foi encontrado no relatório ainda.")
             else:
-                previsao_agg = df_previsao.groupby("Material")["P Vazia"].sum().reset_index()
+                previsao_agg = df_previsao.groupby("Material")["Qtde_Saida"].sum().reset_index()
+                previsao_agg = previsao_agg.rename(columns={"Qtde_Saida": "P Vazia"})
                 previsao_agg = previsao_agg[previsao_agg["P Vazia"] > 0]
 
                 if previsao_agg.empty:
@@ -1387,183 +1361,6 @@ with aba_conciliacao_sede:
                             dados_outros_farol[ag_label] = dados_outros_farol.get(ag_label, 0) + qtd
 
                     renderizar_farol_previsao(dados_familia_farol, dados_outros_farol)
-
-    st.divider()
-
-    if df_mapas_ag_sem_filtro_data is None or df_mapas_ag_sem_filtro_data.empty:
-        st.info("⚠️ Aguardando dados. É necessário ter o relatório 03.07.13 carregado para cruzar.")
-    elif not MAPAS_SEDE_CONC:
-        st.info("⚠️ Nenhum mapa classificado como SEDE no CONC.csv (no período selecionado).")
-    else:
-        colunas_p = ["P Vazia"] + [cp for _, cp, cr in CATEGORIAS_AG_EXTRA if cp in df_mapas_ag_sem_filtro_data.columns]
-        colunas_r = ["R Vazio"] + [cr for _, cp, cr in CATEGORIAS_AG_EXTRA if cr in df_mapas_ag_sem_filtro_data.columns]
-
-        # Só os mapas que o CONC.csv classifica como SEDE entram aqui — não mais "tudo
-        # que não foi digitado no PA". Isso evita mapa de Tianguá/Granja vazando pra cá
-        # quando ele ainda não tem nenhuma conferência registrada.
-        df_totais = df_mapas_ag_sem_filtro_data[df_mapas_ag_sem_filtro_data["Mapa"].isin(MAPAS_SEDE_CONC)].copy()
-        df_totais["Qtd_Saida_554"] = df_totais[colunas_p].sum(axis=1)
-        df_totais["Qtd_Retorno_654"] = df_totais[colunas_r].sum(axis=1)
-
-        col_desc_rep = "Descricao" if "Descricao" in df_totais.columns else None
-        desc_por_material = None
-        if col_desc_rep:
-            desc_por_material = df_totais.drop_duplicates(subset=["Material"])[["Material", col_desc_rep]].rename(columns={col_desc_rep: "Desc_AG"})
-
-        data_por_mapa = {}
-        if "Data" in df_totais.columns:
-            tmp = df_totais.copy()
-            tmp["_dt"] = pd.to_datetime(tmp["Data"], dayfirst=True, errors="coerce")
-            tmp = tmp.dropna(subset=["_dt"])
-            if not tmp.empty:
-                idx = tmp.groupby("Mapa")["_dt"].idxmax()
-                data_por_mapa = tmp.loc[idx].set_index("Mapa")["Data"].to_dict()
-
-        df_concil_sede = df_totais.groupby(["Mapa", "Material"])[["Qtd_Saida_554", "Qtd_Retorno_654"]].sum().reset_index()
-
-        df_concil_sede["Data"] = df_concil_sede["Mapa"].map(data_por_mapa).fillna("-")
-
-        if desc_por_material is not None:
-            df_concil_sede = df_concil_sede.merge(desc_por_material, on="Material", how="left")
-            df_concil_sede["AG"] = [
-                com_apelido(cod, str(desc)) for cod, desc in zip(df_concil_sede["Material"], df_concil_sede["Desc_AG"].fillna(""))
-            ]
-        else:
-            df_concil_sede["AG"] = df_concil_sede["Material"]
-
-        df_concil_sede["Qtd_Saida_554"] = df_concil_sede["Qtd_Saida_554"].round(0).astype(int)
-        df_concil_sede["Qtd_Retorno_654"] = df_concil_sede["Qtd_Retorno_654"].round(0).astype(int)
-        df_concil_sede["Diferença_Num"] = df_concil_sede["Qtd_Retorno_654"] - df_concil_sede["Qtd_Saida_554"]
-
-        familia_tipo_serie = df_concil_sede["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
-        df_concil_sede["Familia"] = familia_tipo_serie.apply(lambda ft: ft[0])
-        df_concil_sede["Tipo"] = familia_tipo_serie.apply(lambda ft: ft[1])
-
-        df_concil_sede["Saída (Total)"] = df_concil_sede.apply(lambda r: formata_qtd_fisica(r["Qtd_Saida_554"], r["Tipo"], r["Familia"]), axis=1)
-        df_concil_sede["Retorno (Total)"] = df_concil_sede.apply(lambda r: formata_qtd_fisica(r["Qtd_Retorno_654"], r["Tipo"], r["Familia"]), axis=1)
-        df_concil_sede["Diferença"] = df_concil_sede.apply(lambda r: formata_diferenca_fisica(r["Diferença_Num"], r["Tipo"], r["Familia"]), axis=1)
-
-        def status_sede(row):
-            dif = row["Diferença_Num"]
-            saida = row["Qtd_Saida_554"]
-            retorno = row["Qtd_Retorno_654"]
-            if saida == 0 and retorno > 0:
-                return "🔎 Sem Saída"
-            if saida > 0 and retorno == 0:
-                return "⏳ Aguardando Retorno"
-            if dif == 0:
-                return "✅ Bateu"
-            if dif < 0:
-                return "❌ Faltou (não retornou)"
-            return "⚠️ Sobrou no Retorno"
-
-        df_concil_sede["Status"] = df_concil_sede.apply(status_sede, axis=1)
-
-        mostrar_so_divergencias = st.checkbox("🔍 Mostrar só o que tem diferença (recomendado)", value=True, key="so_divergencias_sede")
-
-        col_f1, col_f2, col_f3 = st.columns([1, 1, 2])
-        status_filter_sede = col_f1.selectbox(
-            "Filtrar por Status:",
-            ["Todos", "❌ Faltou (não retornou)", "⚠️ Sobrou no Retorno", "🔎 Sem Saída", "⏳ Aguardando Retorno", "✅ Bateu"],
-            key="status_sede",
-        )
-        mapa_search_sede = col_f2.text_input("🔍 Pesquisar Mapa:", "", key="mapa_sede")
-        material_search_sede = col_f3.text_input("🔍 Pesquisar Material/AG:", "", key="material_sede")
-
-        df_display_sede = df_concil_sede.copy()
-        if mostrar_so_divergencias:
-            df_display_sede = df_display_sede[df_display_sede["Status"] != "✅ Bateu"]
-        if status_filter_sede != "Todos":
-            df_display_sede = df_display_sede[df_display_sede["Status"] == status_filter_sede]
-        if mapa_search_sede.strip():
-            df_display_sede = df_display_sede[df_display_sede["Mapa"].str.contains(limpa_mapa(mapa_search_sede))]
-        if material_search_sede.strip():
-            df_display_sede = df_display_sede[df_display_sede["AG"].str.contains(material_search_sede, case=False, na=False)]
-
-        colunas_exibir_sede = ["Mapa", "Data", "AG", "Saída (Total)", "Retorno (Total)", "Diferença", "Status"]
-        df_display_sede = df_display_sede[colunas_exibir_sede].sort_values(by=["Mapa", "AG"])
-
-        # O resumo consolidado (Tianguá + Granja + Sede) ficou concentrado na aba
-        # "Fechamento" — aqui mantemos só o cálculo e uma tabela completa opcional.
-        st.divider()
-        st.info("📊 Veja o resumo de divergências (Tianguá, Granja e Sede) na aba **Fechamento**.")
-
-        with st.expander("📄 Ver tabela completa (respeitando os filtros da tela)"):
-            renderizar_tabela_limpa(df_display_sede, colunas_exibir_sede)
-
-
-# =========================================================================
-# ABA DE OUTRAS CATEGORIAS (Comodato, Devolução, Troca, Consignação, Rec. Consignação)
-# =========================================================================
-with aba_categorias_extra:
-    st.header("📋 Divergências por Categoria")
-    st.caption("Previsto x Realizado por categoria (Comodato, Devolução, Troca, Consignação).")
-
-    MAPAS_CONC_TODOS = MAPAS_PA_CONC | MAPAS_SEDE_CONC
-    if df_mapas_ag_sem_filtro_data is None or df_mapas_ag_sem_filtro_data.empty:
-        st.info("⚠️ Aguardando dados do relatório 03.07.13.")
-    elif not MAPAS_CONC_TODOS:
-        st.info("⚠️ Nenhum mapa no CONC.csv (no período selecionado).")
-    else:
-        df_mapas_cat = df_mapas_ag_sem_filtro_data[df_mapas_ag_sem_filtro_data["Mapa"].isin(MAPAS_CONC_TODOS)]
-        col_desc_cat = "Descricao" if "Descricao" in df_mapas_cat.columns else None
-
-        linhas_cat = []
-        for nome_cat, col_p, col_r in CATEGORIAS_AG_EXTRA:
-            if col_p not in df_mapas_cat.columns or col_r not in df_mapas_cat.columns:
-                continue
-            agg = df_mapas_cat.groupby(["Mapa", "Material"])[[col_p, col_r]].sum().reset_index()
-            agg = agg[(agg[col_p] != 0) | (agg[col_r] != 0)]
-            if agg.empty:
-                continue
-            agg = agg.rename(columns={col_p: "Previsto", col_r: "Realizado"})
-            agg["Categoria"] = nome_cat
-            linhas_cat.append(agg[["Mapa", "Material", "Categoria", "Previsto", "Realizado"]])
-
-        if not linhas_cat:
-            st.info("Nenhum movimento registrado ainda em Comodato, Devolução, Troca, Consignação ou Rec. Consignação.")
-        else:
-            df_cat = pd.concat(linhas_cat, ignore_index=True)
-            df_cat["Previsto"] = df_cat["Previsto"].round(0).astype(int)
-            df_cat["Realizado"] = df_cat["Realizado"].round(0).astype(int)
-            df_cat["Diferença_Num"] = df_cat["Realizado"] - df_cat["Previsto"]
-            df_cat["Diferença"] = df_cat["Diferença_Num"].apply(lambda d: f"+{d}" if d > 0 else (f"{d}" if d < 0 else "0"))
-
-            if col_desc_cat:
-                desc_lookup_cat = df_mapas_cat.drop_duplicates(subset=["Material"]).set_index("Material")[col_desc_cat].to_dict()
-                df_cat["AG"] = [com_apelido(cod, str(desc_lookup_cat.get(cod, cod))) for cod in df_cat["Material"]]
-            else:
-                df_cat["AG"] = df_cat["Material"]
-
-            def status_categoria(row):
-                if row["Diferença_Num"] == 0:
-                    return "✅ Bateu"
-                elif row["Diferença_Num"] < 0:
-                    return "❌ Faltou"
-                else:
-                    return "⚠️ Sobrou"
-
-            df_cat["Status"] = df_cat.apply(status_categoria, axis=1)
-
-            col_fc1, col_fc2, col_fc3 = st.columns([1, 1, 2])
-            categoria_filter = col_fc1.selectbox("Filtrar por Categoria:", ["Todas"] + [c[0] for c in CATEGORIAS_AG_EXTRA])
-            status_filter_cat = col_fc2.selectbox("Filtrar por Status:", ["Todos", "❌ Faltou", "⚠️ Sobrou", "✅ Bateu"])
-            mapa_search_cat = col_fc3.text_input("🔍 Pesquisar Mapa:", "", key="mapa_cat_extra")
-
-            df_cat_display = df_cat.copy()
-            if categoria_filter != "Todas":
-                df_cat_display = df_cat_display[df_cat_display["Categoria"] == categoria_filter]
-            if status_filter_cat != "Todos":
-                df_cat_display = df_cat_display[df_cat_display["Status"] == status_filter_cat]
-            if mapa_search_cat.strip():
-                df_cat_display = df_cat_display[df_cat_display["Mapa"].str.contains(limpa_mapa(mapa_search_cat))]
-
-            df_cat_display = df_cat_display[["Mapa", "AG", "Categoria", "Previsto", "Realizado", "Diferença", "Status"]].sort_values(["Mapa", "Categoria"])
-
-            renderizar_tabela_limpa(
-                df_cat_display,
-                ["Mapa", "AG", "Categoria", "Previsto", "Realizado", "Diferença", "Status"],
-            )
 
 
 # =========================================================================
@@ -1653,10 +1450,10 @@ with aba_fechamento:
 
         mapas_conc_data_ref = {m for m, d in zip(df_mapa_pa["Mapa"], df_mapa_pa["Data"]) if d == data_fechamento_str} if df_mapa_pa is not None and not df_mapa_pa.empty else set()
         mapas_conc_data_ref_resolvidos = set(resolver_mapas(mapas_conc_data_ref))
-        mapas_sem_relatorio_data = mapas_conc_data_ref_resolvidos - (set(df_mapas_ag_sem_filtro_data["Mapa"].unique()) if df_mapas_ag_sem_filtro_data is not None and not df_mapas_ag_sem_filtro_data.empty else set())
+        mapas_sem_relatorio_data = mapas_conc_data_ref_resolvidos - (set(df_020501_historico["Mapa"].unique()) if df_020501_historico is not None and not df_020501_historico.empty else set())
         if mapas_sem_relatorio_data:
             st.warning(
-                f"⚠️ {len(mapas_sem_relatorio_data)} mapa(s) de {data_fechamento_str} ainda não estão no 03.07.13 — "
+                f"⚠️ {len(mapas_sem_relatorio_data)} mapa(s) de {data_fechamento_str} ainda não estão no 02.05.01 — "
                 "eles NÃO entram nos números abaixo (Saída contaria 0). Os totais podem crescer quando o relatório for atualizado."
             )
 
