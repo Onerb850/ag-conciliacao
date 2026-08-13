@@ -529,9 +529,14 @@ with st.sidebar:
 
         if mapas_conc_sem_relatorio:
             st.warning(f"⚠️ {len(mapas_conc_sem_relatorio)} mapa(s) do CONC.csv ainda não estão no 03.07.13.")
-            with st.expander("Ver quais"):
-                for m in sorted(mapas_conc_sem_relatorio, key=lambda x: int(str(x)) if str(x).isdigit() else 0):
-                    st.caption(f"{m} — {MAPA_PA_CLASSIFICACAO.get(m, '?')}")
+            with st.expander("Ver quais (agrupado por PA)"):
+                mapas_faltantes_por_pa: dict[str, list[str]] = {}
+                for m in mapas_conc_sem_relatorio:
+                    mapas_faltantes_por_pa.setdefault(MAPA_PA_CLASSIFICACAO.get(m, "?"), []).append(m)
+                for pa_nome, lista_mapas in sorted(mapas_faltantes_por_pa.items()):
+                    lista_ordenada = sorted(lista_mapas, key=lambda x: int(str(x)) if str(x).isdigit() else 0)
+                    st.markdown(f"**{pa_nome}** ({len(lista_ordenada)}):")
+                    st.caption(", ".join(lista_ordenada))
         else:
             st.caption("✅ Todos os mapas do CONC.csv já estão no 03.07.13.")
 
