@@ -485,11 +485,17 @@ if df_mapa_pa is not None and not df_mapa_pa.empty and "Data" in df_mapa_pa.colu
 
 # {mapa_resolvido: "Tianguá"/"Granja"/"Sede"} — dita o roteamento entre as abas.
 MAPA_PA_CLASSIFICACAO: dict[str, str] = {}
+# {mapa_resolvido: "dd/mm/aaaa"} — data do mapa segundo o CONC.csv, independente de
+# ter conferência lançada ou não. Usada no Fechamento pra achar mapas sem retorno
+# ainda (que não têm data de retorno pra filtrar), evitando que sumam da tela.
+MAPA_DATA_CONC: dict[str, str] = {}
 if df_mapa_pa_periodo is not None and not df_mapa_pa_periodo.empty and "PA" in df_mapa_pa_periodo.columns:
     for _, _linha_conc in df_mapa_pa_periodo.iterrows():
         _mapa_resolvido = resolver_mapa(_linha_conc["Mapa"])
         _pa_bruto = str(_linha_conc["PA"]).strip().upper()
         MAPA_PA_CLASSIFICACAO[_mapa_resolvido] = _PA_NORMALIZADO.get(_pa_bruto, _linha_conc["PA"])
+        if "Data" in _linha_conc:
+            MAPA_DATA_CONC[_mapa_resolvido] = _linha_conc["Data"]
 
 MAPAS_PA_CONC = {m for m, pa in MAPA_PA_CLASSIFICACAO.items() if pa in ("Tianguá", "Granja")}
 MAPAS_SEDE_CONC = {m for m, pa in MAPA_PA_CLASSIFICACAO.items() if pa == "Sede"}
@@ -1396,6 +1402,13 @@ with aba_fechamento:
             pa_unif["PA"] = "Tianguá/Granja"
         if "Data" not in pa_unif.columns:
             pa_unif["Data"] = "-"
+        # Mapa sem retorno lançado não tem Data própria (vem "-" do merge) — nesse
+        # caso, usa a Data do CONC.csv pra esse mapa, senão ele nunca aparece no
+        # Fechamento filtrado por data (mesmo tendo Saída e sendo, portanto, Faltou).
+        pa_unif["Data"] = pa_unif.apply(
+            lambda r: MAPA_DATA_CONC.get(r["Mapa"], r["Data"]) if r["Data"] in ("-", 0, "0") else r["Data"],
+            axis=1,
+        )
         pa_unif["FamiliaConv"] = pa_unif["Item"]
         partes_fechamento.append(pa_unif)
     if not df_concil_sede.empty and "Diferença_Num" in df_concil_sede.columns:
