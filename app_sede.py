@@ -48,6 +48,7 @@ st.caption("_\"Balança enganosa é abominação ao SENHOR, mas o peso justo lhe
 # aba "VazioPA" de produção. Ativar o modo simulação (sidebar) troca de qual aba o
 # app lê, sem apagar nem sobrescrever nada real.
 NOME_ABA_SIMULACAO = "VazioPA_Simulacao"
+NOME_ABA_LOTE_SIMULACAO = "VazioPALote_Simulacao"
 
 REGRAS_VAZIO = {
     "300ml": {"garrafas_por_cx": 23, "garrafeiras_por_cx": 1},
@@ -273,7 +274,7 @@ with st.sidebar:
         "🧪 Modo simulação",
         value=False,
         key="modo_simulacao_ativo",
-        help="Mostra dados de teste (gerados na aba 'Vazio por PA') em vez dos reais. Não mexe nos dados de produção.",
+        help="Isola TUDO (individual + lote) numa aba de teste separada, nunca mexe nos dados reais de produção.",
     )
 
 if modo_simulacao:
@@ -591,14 +592,17 @@ def mapas_da_lote(mapas_str: str) -> list[str]:
 _hist_vazio_pa_bruto = ler_aba_historico(NOME_ABA_SIMULACAO if modo_simulacao else "VazioPA")
 # Usado em todo o formulário/tabela/edição/exclusão da aba "Vazio por PA" — com a
 # simulação ativa, a aba inteira vira um sandbox isolado (lê e grava só na aba de
-# simulação); desativada, volta a mexer só na aba real "VazioPA".
+# simulação); desativada, volta a mexer só na aba real "VazioPA". O Lote segue o
+# mesmo toggle agora — simulação precisa estar 100% isolada de dado real (Lote
+# incluso), senão um lote de teste antigo contamina silenciosamente a conta.
 ABA_VAZIO_PA_ATIVA = NOME_ABA_SIMULACAO if modo_simulacao else "VazioPA"
+ABA_LOTE_ATIVA = NOME_ABA_LOTE_SIMULACAO if modo_simulacao else "VazioPALote"
 if not _hist_vazio_pa_bruto.empty and "Mapa" in _hist_vazio_pa_bruto.columns:
     MAPAS_INDIVIDUAIS = set(_hist_vazio_pa_bruto["Mapa"].apply(limpar_numero_robusto).unique())
 else:
     MAPAS_INDIVIDUAIS = set()
 
-_hist_lote_bruto = ler_aba_historico("VazioPALote")
+_hist_lote_bruto = ler_aba_historico(ABA_LOTE_ATIVA)
 MAPAS_EM_LOTE = set()
 if not _hist_lote_bruto.empty and "Mapas" in _hist_lote_bruto.columns:
     for _mapas_str in _hist_lote_bruto["Mapas"].unique():
@@ -704,7 +708,7 @@ with aba_vazio_pa:
         # já estava salvo na hora de gravar — sem precisar somar de cabeça.
         valores_existentes_lote = {}
         if mapas_chave_atual:
-            hist_lote_atual = ler_aba_historico("VazioPALote")
+            hist_lote_atual = ler_aba_historico(ABA_LOTE_ATIVA)
             if not hist_lote_atual.empty:
                 filtro_lote_atual = (
                     (hist_lote_atual["Data"] == data_lote_str_atual)
@@ -771,7 +775,7 @@ with aba_vazio_pa:
                         })
 
                 if linhas_lote:
-                    acumular_historico(pd.DataFrame(linhas_lote), "VazioPALote", ["Data", "PA", "Mapas", "Familia"])
+                    acumular_historico(pd.DataFrame(linhas_lote), ABA_LOTE_ATIVA, ["Data", "PA", "Mapas", "Familia"])
                     st.success(f"✅ Somado ao total de {len(mapas_lote_auto)} mapas ({', '.join(mapas_lote_auto)})!")
                     st.rerun()
                 else:
@@ -872,7 +876,7 @@ with aba_vazio_pa:
                 salvar_aba_historico(ABA_VAZIO_PA_ATIVA, df_restante)
                 st.rerun()
 
-    df_vazio_lote = ler_aba_historico("VazioPALote")
+    df_vazio_lote = ler_aba_historico(ABA_LOTE_ATIVA)
     if not df_vazio_lote.empty:
         st.divider()
         st.markdown("#### 📦 Lotes conferidos")
@@ -928,7 +932,7 @@ with aba_vazio_pa:
                         "Data": edit_data_lote, "PA": pa_atual_lote, "Mapas": edit_lote_chave, "Familia": edit_familia_lote,
                         "Caixas": novo_caixas_lote, "Garrafas": novo_garrafas_lote, "Garrafeiras": novo_garrafeiras_lote, "Unidades": novo_unidades_lote,
                     }])
-                    acumular_historico(nova_linha_lote, "VazioPALote", ["Data", "PA", "Mapas", "Familia"])
+                    acumular_historico(nova_linha_lote, ABA_LOTE_ATIVA, ["Data", "PA", "Mapas", "Familia"])
                     st.success(f"✅ Item '{edit_familia_lote}' do lote atualizado!")
                     st.rerun()
 
@@ -946,7 +950,7 @@ with aba_vazio_pa:
                 df_restante_lote = df_vazio_lote[
                     ~((df_vazio_lote["Data"] == del_data_lote) & (df_vazio_lote["Mapas"] == del_lote_chave))
                 ]
-                salvar_aba_historico("VazioPALote", df_restante_lote)
+                salvar_aba_historico(ABA_LOTE_ATIVA, df_restante_lote)
                 st.rerun()
 
     st.divider()
