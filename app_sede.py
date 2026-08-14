@@ -57,6 +57,18 @@ REGRAS_VAZIO = {
     "1L": {"garrafas_por_cx": 12, "garrafeiras_por_cx": 1},
 }
 
+# Pros formulários de CONFERÊNCIA (Manual e Lote) — não a Previsão, que continua
+# mostrando Âmbar e Verde separados por cor. Aqui o conferente digita um total só de
+# "600" (não separa fisicamente Âmbar de Verde), e o app soma a Saída dos dois
+# códigos (600ml + Verde 600) antes de comparar com esse total único.
+FAMILIAS_CONFERENCIA = ["300ml", "600ml", "1L"]
+
+
+def normaliza_600(fam: str) -> str:
+    """Trata 600ml e Verde 600 como a mesma família pra fins de conferência PA —
+    conferente não separa fisicamente, então Saída e Retorno são comparados juntos."""
+    return "600ml" if fam == "Verde 600" else fam
+
 # Mesma paleta usada em cor_linha_status — cada status vira o fundo pastel e o emoji
 # gigante do "cartão de resultado" nos resumos "pra enviar", e também alimenta a
 # tabela "estilo limpo" (pill de status) usada nos blocos de detalhe.
@@ -554,7 +566,7 @@ def gerar_simulacao_perfeita(data_alvo) -> pd.DataFrame:
 
     familia_tipo_sim = df_020501_historico["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
     df_sim = df_020501_historico.copy()
-    df_sim["Familia"] = familia_tipo_sim.apply(lambda ft: ft[0])
+    df_sim["Familia"] = familia_tipo_sim.apply(lambda ft: normaliza_600(ft[0]))
     df_sim["Tipo"] = familia_tipo_sim.apply(lambda ft: ft[1])
     df_sim = df_sim[(df_sim["Familia"] != "Outro") & (df_sim["Tipo"] != "Garrafeira")]
     df_sim = df_sim[df_sim["Mapa"].isin(mapas_pa_sim["MapaResolvido"].unique())]
@@ -664,7 +676,7 @@ with aba_vazio_pa:
             st.info(f"📋 Total já salvo pra esses mapas — {resumo_manual}. Digite só a quantidade NOVA, o sistema soma sozinho.")
 
         st.markdown("**Caixas Físicas que Retornaram (total dos mapas acima)**")
-        valores_familia_pa = {fam: st.number_input(rotulo_familia_vazio(fam), min_value=0, step=1, key=f"cx_pa_{fam}") for fam in REGRAS_VAZIO}
+        valores_familia_pa = {fam: st.number_input(rotulo_familia_vazio(fam), min_value=0, step=1, key=f"cx_pa_{fam}") for fam in FAMILIAS_CONFERENCIA}
 
         st.markdown("**Outros AG (sem conversão — já em unidade final)**")
         c1, c2, c3, c4, c5 = st.columns(5)
@@ -773,7 +785,7 @@ with aba_vazio_pa:
         st.markdown("**Caixas Físicas que Retornaram (quantidade NOVA, não o total)**")
         valores_familia_lote = {
             fam: st.number_input(rotulo_familia_vazio(fam), min_value=0, step=1, key=f"cx_lote_{fam}")
-            for fam in REGRAS_VAZIO
+            for fam in FAMILIAS_CONFERENCIA
         }
 
         st.markdown("**Outros AG (quantidade NOVA, sem conversão)**")
@@ -1123,7 +1135,7 @@ with aba_conciliacao:
         # manualmente, que também só conta Garrafas+Unidades (nunca Garrafeiras).
         familia_tipo_venda = df_020501_historico["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
         df_venda_ag = df_020501_historico.copy()
-        df_venda_ag["Familia"] = familia_tipo_venda.apply(lambda ft: ft[0])
+        df_venda_ag["Familia"] = familia_tipo_venda.apply(lambda ft: normaliza_600(ft[0]))
         df_venda_ag["Tipo"] = familia_tipo_venda.apply(lambda ft: ft[1])
         df_venda_ag = df_venda_ag[(df_venda_ag["Familia"] != "Outro") & (df_venda_ag["Tipo"] != "Garrafeira")]
 
