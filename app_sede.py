@@ -508,6 +508,26 @@ def calcular_saida_familias(mapas_resolvidos: list[str]) -> dict[str, int]:
     return df_calc.groupby("Familia")["Qtde_Saida"].sum().round(0).astype(int).to_dict()
 
 
+def formata_un_em_cx(qtd: int, familia: str) -> str:
+    """Converte unidades soltas em 'X cx' ou 'X cx + Y un' — mesmo padrão usado no
+    resto do app, pro status na hora não mostrar número gigante de garrafa solta."""
+    fator = int(fator_conversao_caixas(familia)) or 1
+    qtd = int(qtd)
+    cx, un = qtd // fator, qtd % fator
+    if cx == 0 and un == 0:
+        return "0"
+    partes = []
+    if cx > 0: partes.append(f"{cx} cx")
+    if un > 0: partes.append(f"{un} un")
+    return " + ".join(partes)
+
+
+def formata_dif_em_cx(dif: int, familia: str) -> str:
+    """Igual formata_un_em_cx, mas com sinal — pra coluna Diferença."""
+    sinal = "+" if dif > 0 else ("-" if dif < 0 else "")
+    return f"{sinal}{formata_un_em_cx(abs(int(dif)), familia)}" if dif != 0 else "0"
+
+
 # =========================================================================
 # CONC.csv é a fonte única de verdade de QUAIS MAPAS e QUAIS DATAS entram em
 # cada conciliação — o relatório 03.07.13 só é usado pra consultar valores por
@@ -695,7 +715,7 @@ with aba_vazio_pa:
         saida_esperada_manual = calcular_saida_familias(mapas_manual_resolvidos)
         if not valores_existentes_manual:
             if saida_esperada_manual:
-                resumo_saida = ", ".join(f"{fam}: {int(qtd)} un" for fam, qtd in saida_esperada_manual.items())
+                resumo_saida = ", ".join(f"{fam}: {formata_un_em_cx(qtd, fam)}" for fam, qtd in saida_esperada_manual.items())
                 st.info(f"📤 Ainda não há retorno salvo pra esses mapas. Saída esperada: {resumo_saida}")
             else:
                 st.warning("Nenhuma Saída encontrada pra esses mapas no 02.05.01 ainda.")
@@ -709,7 +729,13 @@ with aba_vazio_pa:
                 if saida_fam == 0 and retorno_fam == 0:
                     continue
                 status_txt = "✅ Bateu" if dif == 0 else ("❌ Faltou" if dif < 0 else "⚠️ Sobrou")
-                linhas_status.append({"Item": rotulo_conferencia(familia), "Saída": saida_fam, "Retorno": retorno_fam, "Diferença": dif, "Status": status_txt})
+                linhas_status.append({
+                    "Item": rotulo_conferencia(familia),
+                    "Saída": formata_un_em_cx(saida_fam, familia),
+                    "Retorno": formata_un_em_cx(retorno_fam, familia),
+                    "Diferença": formata_dif_em_cx(dif, familia),
+                    "Status": status_txt,
+                })
             if linhas_status:
                 renderizar_tabela_limpa(pd.DataFrame(linhas_status), ["Item", "Saída", "Retorno", "Diferença", "Status"])
 
@@ -817,7 +843,7 @@ with aba_vazio_pa:
         saida_esperada_lote = calcular_saida_familias(mapas_lote_resolvidos_status)
         if not valores_existentes_lote:
             if saida_esperada_lote:
-                resumo_saida_lote = ", ".join(f"{fam}: {int(qtd)} un" for fam, qtd in saida_esperada_lote.items())
+                resumo_saida_lote = ", ".join(f"{fam}: {formata_un_em_cx(qtd, fam)}" for fam, qtd in saida_esperada_lote.items())
                 st.info(f"📤 Ainda não há retorno salvo pra esse lote. Saída esperada: {resumo_saida_lote}")
         else:
             st.markdown("**Status atual (com o que já está salvo):**")
@@ -829,7 +855,13 @@ with aba_vazio_pa:
                 if saida_fam == 0 and retorno_fam == 0:
                     continue
                 status_txt = "✅ Bateu" if dif == 0 else ("❌ Faltou" if dif < 0 else "⚠️ Sobrou")
-                linhas_status_lote.append({"Item": rotulo_conferencia(familia), "Saída": saida_fam, "Retorno": retorno_fam, "Diferença": dif, "Status": status_txt})
+                linhas_status_lote.append({
+                    "Item": rotulo_conferencia(familia),
+                    "Saída": formata_un_em_cx(saida_fam, familia),
+                    "Retorno": formata_un_em_cx(retorno_fam, familia),
+                    "Diferença": formata_dif_em_cx(dif, familia),
+                    "Status": status_txt,
+                })
             if linhas_status_lote:
                 renderizar_tabela_limpa(pd.DataFrame(linhas_status_lote), ["Item", "Saída", "Retorno", "Diferença", "Status"])
     else:
