@@ -69,6 +69,14 @@ def normaliza_600(fam: str) -> str:
     conferente não separa fisicamente, então Saída e Retorno são comparados juntos."""
     return "600ml" if fam == "Verde 600" else fam
 
+
+def rotulo_conferencia(fam: str) -> str:
+    """Rótulo pros campos dos formulários de conferência — "600ml" vira o total
+    combinado (Âmbar+Verde), não o rótulo padrão "600 AMBAR" (que sugeriria só Âmbar)."""
+    if fam == "600ml":
+        return "600 (Âmbar + Verde)"
+    return rotulo_familia_vazio(fam)
+
 # Mesma paleta usada em cor_linha_status — cada status vira o fundo pastel e o emoji
 # gigante do "cartão de resultado" nos resumos "pra enviar", e também alimenta a
 # tabela "estilo limpo" (pill de status) usada nos blocos de detalhe.
@@ -676,7 +684,7 @@ with aba_vazio_pa:
             st.info(f"📋 Total já salvo pra esses mapas — {resumo_manual}. Digite só a quantidade NOVA, o sistema soma sozinho.")
 
         st.markdown("**Caixas Físicas que Retornaram (total dos mapas acima)**")
-        valores_familia_pa = {fam: st.number_input(rotulo_familia_vazio(fam), min_value=0, step=1, key=f"cx_pa_{fam}") for fam in FAMILIAS_CONFERENCIA}
+        valores_familia_pa = {fam: st.number_input(rotulo_conferencia(fam), min_value=0, step=1, key=f"cx_pa_{fam}") for fam in FAMILIAS_CONFERENCIA}
 
         st.markdown("**Outros AG (sem conversão — já em unidade final)**")
         c1, c2, c3, c4, c5 = st.columns(5)
@@ -784,7 +792,7 @@ with aba_vazio_pa:
 
         st.markdown("**Caixas Físicas que Retornaram (quantidade NOVA, não o total)**")
         valores_familia_lote = {
-            fam: st.number_input(rotulo_familia_vazio(fam), min_value=0, step=1, key=f"cx_lote_{fam}")
+            fam: st.number_input(rotulo_conferencia(fam), min_value=0, step=1, key=f"cx_lote_{fam}")
             for fam in FAMILIAS_CONFERENCIA
         }
 
