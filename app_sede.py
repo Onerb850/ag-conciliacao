@@ -616,13 +616,54 @@ if not _hist_lote_bruto.empty and "Mapas" in _hist_lote_bruto.columns:
 with aba_vazio_pa:
     st.caption("Conferência do vazio por PA e mapa.")
 
-    with st.form("form_vazio_pa", clear_on_submit=True):
-        col_data, col_pa, col_mapa = st.columns(3)
-        data_pa = col_data.date_input("Data da Descarga", value=date.today(), key="data_vazio_pa")
-        pa_escolhido = col_pa.selectbox("PA", ["Tianguá", "Granja"], key="pa_vazio_pa")
-        mapa_texto = col_mapa.text_input("Número do Mapa (um por vez)")
+    st.markdown("### ✍️ Conferência Manual (um ou vários mapas)")
+    st.caption("Digite um mapa só, ou vários separados por vírgula (pode misturar PA e Sede) — o total informado abaixo vale pra soma de todos eles juntos. A PA de cada mapa é detectada sozinha pelo CONC.csv.")
 
-        st.markdown("**Caixas Físicas que Retornaram**")
+    col_data_manual, col_mapas_manual = st.columns([1, 2])
+    data_manual = col_data_manual.date_input("Data da Descarga", value=date.today(), key="data_vazio_manual")
+    mapas_texto_manual = col_mapas_manual.text_input(
+        "Números dos Mapas (separados por vírgula)",
+        placeholder="ex: 257828, 257829, 257847",
+        key="mapas_texto_manual",
+    )
+
+    mapas_manual_limpos = sorted(set(limpa_mapa(m) for m in mapas_texto_manual.split(",") if m.strip()))
+    mapas_manual_resolvidos = resolver_mapas(mapas_manual_limpos) if mapas_manual_limpos else []
+    pa_por_mapa_manual = {m: MAPA_PA_CLASSIFICACAO.get(m, "Desconhecido") for m in mapas_manual_resolvidos}
+    pas_distintas_manual = sorted(set(pa_por_mapa_manual.values()))
+    pa_combinado_manual = pas_distintas_manual[0] if len(pas_distintas_manual) == 1 else " + ".join(pas_distintas_manual)
+
+    if mapas_manual_limpos:
+        st.caption(" · ".join(f"{m} → {pa_por_mapa_manual.get(m, '?')}" for m in mapas_manual_resolvidos))
+        if "Desconhecido" in pas_distintas_manual:
+            st.warning("Algum mapa digitado não está no CONC.csv — confira o número, ou ele fica classificado como 'Desconhecido'.")
+
+    with st.form("form_vazio_pa", clear_on_submit=True):
+        data_manual_str = data_manual.strftime("%d/%m/%Y")
+        mapas_chave_manual = ";".join(mapas_manual_limpos)
+
+        # Mesmo pré-preenchimento do Lote: mostra o total já salvo (se houver) pra
+        # essa Data+PA+conjunto de mapas exato, e você digita só a quantidade NOVA.
+        valores_existentes_manual = {}
+        if mapas_chave_manual:
+            hist_manual_atual = ler_aba_historico(ABA_LOTE_ATIVA)
+            if not hist_manual_atual.empty:
+                filtro_manual = (
+                    (hist_manual_atual["Data"] == data_manual_str)
+                    & (hist_manual_atual["PA"] == pa_combinado_manual)
+                    & (hist_manual_atual["Mapas"] == mapas_chave_manual)
+                )
+                for _, r in hist_manual_atual[filtro_manual].iterrows():
+                    valores_existentes_manual[r["Familia"]] = r
+
+        if valores_existentes_manual:
+            resumo_manual = ", ".join(
+                f"{fam}: {int(r['Caixas'])} cx" if fam in REGRAS_VAZIO else f"{fam}: {int(r['Unidades'])} un"
+                for fam, r in valores_existentes_manual.items()
+            )
+            st.info(f"📋 Total já salvo pra esses mapas — {resumo_manual}. Digite só a quantidade NOVA, o sistema soma sozinho.")
+
+        st.markdown("**Caixas Físicas que Retornaram (total dos mapas acima)**")
         valores_familia_pa = {fam: st.number_input(rotulo_familia_vazio(fam), min_value=0, step=1, key=f"cx_pa_{fam}") for fam in REGRAS_VAZIO}
 
         st.markdown("**Outros AG (sem conversão — já em unidade final)**")
@@ -634,24 +675,23 @@ with aba_vazio_pa:
         barril50_pa = c5.number_input("Barril 50L", min_value=0, step=1, key="outros_pa_barril50")
 
         if st.form_submit_button("Salvar conferência"):
-            mapa_numero = limpa_mapa(mapa_texto.strip())
-            if not mapa_texto.strip():
-                st.error("Informe o número do mapa antes de salvar.")
-            elif "," in mapa_texto:
-                st.error("Um mapa por vez — se tiver mais de um, salve cada um separadamente (o formulário limpa sozinho depois de salvar).")
+            if not mapas_manual_limpos:
+                st.error("Informe pelo menos um número de mapa antes de salvar.")
             else:
-                data_str_pa = data_pa.strftime("%d/%m/%Y")
+                data_str_pa = data_manual_str
                 gf_600 = valores_familia_pa.get("600ml", 0) + valores_familia_pa.get("Verde 600", 0)
                 linhas_pa = []
 
-                for familia, qtd_cx in valores_familia_pa.items():
+                for familia, qtd_cx_nova in valores_familia_pa.items():
+                    caixas_existentes = int(valores_existentes_manual[familia]["Caixas"]) if familia in valores_existentes_manual else 0
+                    qtd_cx = caixas_existentes + qtd_cx_nova
                     if qtd_cx > 0:
                         r = REGRAS_VAZIO[familia]
                         gf = gf_600 if familia == "600ml" else (0 if familia == "Verde 600" else qtd_cx * r["garrafeiras_por_cx"])
                         linhas_pa.append({
                             "Data": data_str_pa,
-                            "PA": pa_escolhido,
-                            "Mapa": mapa_numero,
+                            "PA": pa_combinado_manual,
+                            "Mapas": mapas_chave_manual,
                             "Familia": familia,
                             "Caixas": qtd_cx,
                             "Garrafas": qtd_cx * r["garrafas_por_cx"],
@@ -659,15 +699,17 @@ with aba_vazio_pa:
                             "Unidades": 0,
                         })
 
-                for familia_outros, qtd_un in [
+                for familia_outros, qtd_un_nova in [
                     ("Chapatex", chapatex_pa), ("Pallet PBR1", pbr1_pa), ("Pallet PBR2", pbr2_pa),
                     ("Barril 30L", barril30_pa), ("Barril 50L", barril50_pa),
                 ]:
+                    unidades_existentes = int(valores_existentes_manual[familia_outros]["Unidades"]) if familia_outros in valores_existentes_manual else 0
+                    qtd_un = unidades_existentes + qtd_un_nova
                     if qtd_un > 0:
                         linhas_pa.append({
                             "Data": data_str_pa,
-                            "PA": pa_escolhido,
-                            "Mapa": mapa_numero,
+                            "PA": pa_combinado_manual,
+                            "Mapas": mapas_chave_manual,
                             "Familia": familia_outros,
                             "Caixas": 0,
                             "Garrafas": 0,
@@ -676,8 +718,8 @@ with aba_vazio_pa:
                         })
 
                 if linhas_pa:
-                    acumular_historico(pd.DataFrame(linhas_pa), ABA_VAZIO_PA_ATIVA, ["Data", "PA", "Mapa", "Familia"])
-                    st.success(f"✅ Retorno do mapa {mapa_numero} salvo com sucesso!")
+                    acumular_historico(pd.DataFrame(linhas_pa), ABA_LOTE_ATIVA, ["Data", "PA", "Mapas", "Familia"])
+                    st.success(f"✅ Somado ao total de {len(mapas_manual_limpos)} mapa(s) ({', '.join(mapas_manual_limpos)})!")
                     st.rerun()
                 else:
                     st.warning("Nenhuma quantidade foi informada para salvar.")
