@@ -491,6 +491,23 @@ if df_020501_historico is not None and not df_020501_historico.empty:
         df_020501_historico["Qtde_Saida"] = pd.to_numeric(df_020501_historico["Qtde_Saida"], errors="coerce").fillna(0)
 
 
+def calcular_saida_familias(mapas_resolvidos: list[str]) -> dict[str, int]:
+    """Soma a Saída (02.05.01) de um conjunto de mapas, por família (300ml/600ml/1L,
+    já com 600 Âmbar+Verde combinados) — usado pra mostrar Bateu/Faltou/Sobrou na hora,
+    direto na tela de conferência, sem precisar ir na aba de Conciliação."""
+    if df_020501_historico is None or df_020501_historico.empty or not mapas_resolvidos:
+        return {}
+    fam_tipo_calc = df_020501_historico["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
+    df_calc = df_020501_historico.copy()
+    df_calc["Familia"] = fam_tipo_calc.apply(lambda ft: normaliza_600(ft[0]))
+    df_calc["Tipo"] = fam_tipo_calc.apply(lambda ft: ft[1])
+    df_calc = df_calc[(df_calc["Familia"] != "Outro") & (df_calc["Tipo"] != "Garrafeira")]
+    df_calc = df_calc[df_calc["Mapa"].isin(mapas_resolvidos)]
+    if df_calc.empty:
+        return {}
+    return df_calc.groupby("Familia")["Qtde_Saida"].sum().round(0).astype(int).to_dict()
+
+
 # =========================================================================
 # CONC.csv é a fonte única de verdade de QUAIS MAPAS e QUAIS DATAS entram em
 # cada conciliação — o relatório 03.07.13 só é usado pra consultar valores por
@@ -652,30 +669,51 @@ with aba_vazio_pa:
     pa_por_mapa_manual = {m: MAPA_PA_CLASSIFICACAO.get(m, "Desconhecido") for m in mapas_manual_resolvidos}
     pas_distintas_manual = sorted(set(pa_por_mapa_manual.values()))
     pa_combinado_manual = pas_distintas_manual[0] if len(pas_distintas_manual) == 1 else " + ".join(pas_distintas_manual)
+    data_manual_str = data_manual.strftime("%d/%m/%Y")
+    mapas_chave_manual = ";".join(mapas_manual_limpos)
+
+    # Já busca aqui fora (não só dentro do form) o que já está salvo pra esse
+    # conjunto exato de mapas, e a Saída real deles — assim dá pra mostrar
+    # Bateu/Faltou/Sobrou na hora, sem precisar salvar antes ou ir noutra aba.
+    valores_existentes_manual = {}
+    if mapas_chave_manual:
+        hist_manual_atual = ler_aba_historico(ABA_LOTE_ATIVA)
+        if not hist_manual_atual.empty:
+            filtro_manual = (
+                (hist_manual_atual["Data"] == data_manual_str)
+                & (hist_manual_atual["PA"] == pa_combinado_manual)
+                & (hist_manual_atual["Mapas"] == mapas_chave_manual)
+            )
+            for _, r in hist_manual_atual[filtro_manual].iterrows():
+                valores_existentes_manual[r["Familia"]] = r
 
     if mapas_manual_limpos:
         st.caption(" · ".join(f"{m} → {pa_por_mapa_manual.get(m, '?')}" for m in mapas_manual_resolvidos))
         if "Desconhecido" in pas_distintas_manual:
             st.warning("Algum mapa digitado não está no CONC.csv — confira o número, ou ele fica classificado como 'Desconhecido'.")
 
+        saida_esperada_manual = calcular_saida_familias(mapas_manual_resolvidos)
+        if not valores_existentes_manual:
+            if saida_esperada_manual:
+                resumo_saida = ", ".join(f"{fam}: {int(qtd)} un" for fam, qtd in saida_esperada_manual.items())
+                st.info(f"📤 Ainda não há retorno salvo pra esses mapas. Saída esperada: {resumo_saida}")
+            else:
+                st.warning("Nenhuma Saída encontrada pra esses mapas no 02.05.01 ainda.")
+        else:
+            st.markdown("**Status atual (com o que já está salvo):**")
+            linhas_status = []
+            for familia in FAMILIAS_CONFERENCIA:
+                saida_fam = saida_esperada_manual.get(familia, 0)
+                retorno_fam = int(valores_existentes_manual[familia]["Garrafas"]) if familia in valores_existentes_manual else 0
+                dif = retorno_fam - saida_fam
+                if saida_fam == 0 and retorno_fam == 0:
+                    continue
+                status_txt = "✅ Bateu" if dif == 0 else ("❌ Faltou" if dif < 0 else "⚠️ Sobrou")
+                linhas_status.append({"Item": rotulo_conferencia(familia), "Saída": saida_fam, "Retorno": retorno_fam, "Diferença": dif, "Status": status_txt})
+            if linhas_status:
+                renderizar_tabela_limpa(pd.DataFrame(linhas_status), ["Item", "Saída", "Retorno", "Diferença", "Status"])
+
     with st.form("form_vazio_pa", clear_on_submit=True):
-        data_manual_str = data_manual.strftime("%d/%m/%Y")
-        mapas_chave_manual = ";".join(mapas_manual_limpos)
-
-        # Mesmo pré-preenchimento do Lote: mostra o total já salvo (se houver) pra
-        # essa Data+PA+conjunto de mapas exato, e você digita só a quantidade NOVA.
-        valores_existentes_manual = {}
-        if mapas_chave_manual:
-            hist_manual_atual = ler_aba_historico(ABA_LOTE_ATIVA)
-            if not hist_manual_atual.empty:
-                filtro_manual = (
-                    (hist_manual_atual["Data"] == data_manual_str)
-                    & (hist_manual_atual["PA"] == pa_combinado_manual)
-                    & (hist_manual_atual["Mapas"] == mapas_chave_manual)
-                )
-                for _, r in hist_manual_atual[filtro_manual].iterrows():
-                    valores_existentes_manual[r["Familia"]] = r
-
         if valores_existentes_manual:
             resumo_manual = ", ".join(
                 f"{fam}: {int(r['Caixas'])} cx" if fam in REGRAS_VAZIO else f"{fam}: {int(r['Unidades'])} un"
@@ -753,33 +791,51 @@ with aba_vazio_pa:
     pa_lote = col_pa_l.selectbox("PA", ["Tianguá", "Granja"], key="pa_lote")
 
     mapas_lote_auto = buscar_mapas_por_data_pa(data_lote, pa_lote)
+    data_lote_str_atual = data_lote.strftime("%d/%m/%Y")
+    mapas_chave_atual = ";".join(mapas_lote_auto) if mapas_lote_auto else ""
+
+    # Busca aqui fora (não só dentro do form) o que já está salvo, e a Saída real —
+    # assim dá pra mostrar Bateu/Faltou/Sobrou na hora.
+    valores_existentes_lote = {}
+    if mapas_chave_atual:
+        hist_lote_atual = ler_aba_historico(ABA_LOTE_ATIVA)
+        if not hist_lote_atual.empty:
+            filtro_lote_atual = (
+                (hist_lote_atual["Data"] == data_lote_str_atual)
+                & (hist_lote_atual["PA"] == pa_lote)
+                & (hist_lote_atual["Mapas"] == mapas_chave_atual)
+            )
+            for _, r in hist_lote_atual[filtro_lote_atual].iterrows():
+                valores_existentes_lote[r["Familia"]] = r
+
     if df_mapa_pa is None or df_mapa_pa.empty:
         st.error(f"Não encontrei '{ARQUIVO_MAPA_PA.name}' no Google Drive nem histórico acumulado ainda — sem isso não dá pra buscar os mapas automaticamente.")
     elif mapas_lote_auto:
         st.success(f"{len(mapas_lote_auto)} mapa(s) de {pa_lote} em {data_lote.strftime('%d/%m/%Y')}: {', '.join(mapas_lote_auto)}")
+
+        mapas_lote_resolvidos_status = resolver_mapas(mapas_lote_auto)
+        saida_esperada_lote = calcular_saida_familias(mapas_lote_resolvidos_status)
+        if not valores_existentes_lote:
+            if saida_esperada_lote:
+                resumo_saida_lote = ", ".join(f"{fam}: {int(qtd)} un" for fam, qtd in saida_esperada_lote.items())
+                st.info(f"📤 Ainda não há retorno salvo pra esse lote. Saída esperada: {resumo_saida_lote}")
+        else:
+            st.markdown("**Status atual (com o que já está salvo):**")
+            linhas_status_lote = []
+            for familia in FAMILIAS_CONFERENCIA:
+                saida_fam = saida_esperada_lote.get(familia, 0)
+                retorno_fam = int(valores_existentes_lote[familia]["Garrafas"]) if familia in valores_existentes_lote else 0
+                dif = retorno_fam - saida_fam
+                if saida_fam == 0 and retorno_fam == 0:
+                    continue
+                status_txt = "✅ Bateu" if dif == 0 else ("❌ Faltou" if dif < 0 else "⚠️ Sobrou")
+                linhas_status_lote.append({"Item": rotulo_conferencia(familia), "Saída": saida_fam, "Retorno": retorno_fam, "Diferença": dif, "Status": status_txt})
+            if linhas_status_lote:
+                renderizar_tabela_limpa(pd.DataFrame(linhas_status_lote), ["Item", "Saída", "Retorno", "Diferença", "Status"])
     else:
         st.warning(f"Nenhum mapa cadastrado pra {pa_lote} em {data_lote.strftime('%d/%m/%Y')} na planilha 'Mapa PA'.")
 
     with st.form("form_vazio_pa_lote", clear_on_submit=True):
-        data_lote_str_atual = data_lote.strftime("%d/%m/%Y")
-        mapas_chave_atual = ";".join(mapas_lote_auto) if mapas_lote_auto else ""
-
-        # Busca o que já está salvo pra essa Data+PA+conjunto de mapas — só pra
-        # MOSTRAR o total atual (informativo). Os campos abaixo começam em 0: você
-        # digita só a quantidade NOVA de agora, e o sistema soma sozinho com o que
-        # já estava salvo na hora de gravar — sem precisar somar de cabeça.
-        valores_existentes_lote = {}
-        if mapas_chave_atual:
-            hist_lote_atual = ler_aba_historico(ABA_LOTE_ATIVA)
-            if not hist_lote_atual.empty:
-                filtro_lote_atual = (
-                    (hist_lote_atual["Data"] == data_lote_str_atual)
-                    & (hist_lote_atual["PA"] == pa_lote)
-                    & (hist_lote_atual["Mapas"] == mapas_chave_atual)
-                )
-                for _, r in hist_lote_atual[filtro_lote_atual].iterrows():
-                    valores_existentes_lote[r["Familia"]] = r
-
         if valores_existentes_lote:
             resumo_atual = ", ".join(
                 f"{fam}: {int(r['Caixas'])} cx" if fam in REGRAS_VAZIO else f"{fam}: {int(r['Unidades'])} un"
