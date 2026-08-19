@@ -1391,11 +1391,11 @@ with aba_conciliacao:
     st.header("⚖️ Conciliação de Mapas PA (Saída 02.05.01 vs. Retorno conferente)")
     st.caption("Mapas Tianguá/Granja do CONC.csv — aparecem mesmo sem conferência ainda.")
 
-    df_concil = pd.DataFrame()  # fallback — usado pela aba Fechamento mesmo sem dados aqui
+    df_concil = pd.DataFrame()  # fallback
     if df_020501_historico is None or df_020501_historico.empty or not MAPAS_PA_CONC:
         st.info("⚠️ Aguardando dados. É necessário ter o relatório 02.05.01 e o CONC.csv (com mapas Tianguá/Granja) carregados.")
     else:
-        # 1. VENDA (SAÍDA) — agora vem do 02.05.01 (código 554), não mais do 03.07.13.
+        # 1. VENDA (SAÍDA)
         familia_tipo_venda = df_020501_historico["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
         df_venda_ag = df_020501_historico.copy()
         df_venda_ag["Familia"] = familia_tipo_venda.apply(lambda ft: normaliza_600(ft[0]))
@@ -1426,8 +1426,7 @@ with aba_conciliacao:
             st.error(
                 f"⚠️ Mapa(s) registrados tanto individualmente quanto em lote — isso zera a "
                 f"Saída do lado individual: {', '.join(sorted(_mapas_conflito, key=lambda m: int(str(m)) if str(m).isdigit() else 0))}. "
-                "Apague o registro individual OU o lote pra esses mapas (seção 'Editar ou Apagar "
-                "Registros' / 'Apagar um lote', mais abaixo nesta aba)."
+                "Apague o registro individual OU o lote pra esses mapas."
             )
 
         mapa_pa_lookup = hist_vazio_pa.groupby("Mapa")["PA"].first().to_dict()
@@ -1450,7 +1449,7 @@ with aba_conciliacao:
 
         df_concil["Mapa"] = df_concil["Mapa"].apply(rotulo_mapa)
 
-        # ==================== LOTE (vários mapas conferidos juntos) ====================
+        # ==================== LOTE ====================
         if not _hist_lote_bruto.empty and "Mapas" in _hist_lote_bruto.columns:
             hist_lote = _hist_lote_bruto.copy()
             if "Garrafas" not in hist_lote.columns: hist_lote["Garrafas"] = 0
@@ -1497,7 +1496,6 @@ with aba_conciliacao:
 
         FAMILIAS_GARRAFA = ("300ml", "600ml", "Verde 600", "1L")
 
-        # 4. CRIAÇÃO DOS TEXTOS FORMATADOS
         def formata_cx_un(cx, un, fam):
             if fam not in FAMILIAS_GARRAFA:
                 total = int(cx) + int(un)
@@ -1559,6 +1557,7 @@ with aba_conciliacao:
         if status_filter != "Todos":
             df_display = df_display[df_display["Status"] == status_filter]
 
+        # Se houver pesquisa, aprofundar na análise do mapa
         if mapa_search.strip() != "":
             df_display = df_display[df_display["Mapa"].str.contains(limpa_mapa(mapa_search))]
 
@@ -1566,8 +1565,75 @@ with aba_conciliacao:
         df_display = df_display[colunas_exibir_pa]
         df_display = df_display.sort_values(by=["Mapa", "Familia"])
 
-        with st.expander("📄 Ver tabela completa (todos os itens, inclusive os que bateram)"):
-            renderizar_tabela_limpa(df_display, colunas_exibir_pa)
+        # =====================================================================
+        # 🔍 NOVO: RAIO-X DO MAPA (Deep Dive)
+        # =====================================================================
+        if mapa_search.strip() != "":
+            mapa_limpo = limpa_mapa(mapa_search)
+            st.divider()
+            st.markdown(f"### 🔍 Raio-X do Mapa: `{mapa_limpo}`")
+            
+            if df_display.empty:
+                st.warning("Este mapa não possui registros de conciliação no período/filtros selecionados.")
+            else:
+                st.markdown("**⚖️ Resultado da Conciliação Físico (Agrupado por Família)**")
+                renderizar_tabela_limpa(df_display, colunas_exibir_pa)
+                
+                st.write("")
+                col_saida, col_retorno = st.columns(2)
+                
+                with col_saida:
+                    st.markdown("**📤 Saída Detalhada (Relatório 02.05.01)**")
+                    mapa_res = resolver_mapa(mapa_limpo)
+                    
+                    df_saida_mapa = df_020501_historico[df_020501_historico["Mapa"] == mapa_res].copy() if (df_020501_historico is not None and not df_020501_historico.empty) else pd.DataFrame()
+                    
+                    if not df_saida_mapa.empty:
+                        if "Descricao" in df_saida_mapa.columns:
+                            df_saida_mapa["Item"] = df_saida_mapa.apply(lambda r: com_apelido(r["Material"], r["Descricao"]), axis=1)
+                        else:
+                            df_saida_mapa["Item"] = df_saida_mapa["Material"]
+                            
+                        df_saida_mapa = df_saida_mapa[["Item", "Qtde_Saida"]].rename(columns={"Qtde_Saida": "Qtd (un)"})
+                        df_saida_mapa["Qtd (un)"] = df_saida_mapa["Qtd (un)"].astype(int)
+                        df_saida_mapa = df_saida_mapa.sort_values("Qtd (un)", ascending=False)
+                        st.dataframe(df_saida_mapa, width='stretch', hide_index=True)
+                    else:
+                        st.caption("Nenhum item registrado na saída para este mapa no relatório atual.")
+
+                with col_retorno:
+                    st.markdown("**🚚 Retorno Digitado (Físico)**")
+                    encontrou_retorno = False
+                    
+                    def mapa_in_lote(mapas_str):
+                        return mapa_limpo in mapas_da_lote(mapas_str)
+                        
+                    if not _hist_lote_bruto.empty and "Mapas" in _hist_lote_bruto.columns:
+                        lotes_encontrados = _hist_lote_bruto[_hist_lote_bruto["Mapas"].apply(mapa_in_lote)]
+                        if not lotes_encontrados.empty:
+                            encontrou_retorno = True
+                            st.info(f"📦 Conferido num lote junto com: {lotes_encontrados.iloc[0]['Mapas'].replace(';', ', ')}")
+                            df_ret_exib = lotes_encontrados[["Familia", "Caixas", "Garrafas", "Garrafeiras", "Unidades"]].copy()
+                            for c in ["Caixas", "Garrafas", "Garrafeiras", "Unidades"]:
+                                df_ret_exib[c] = pd.to_numeric(df_ret_exib[c], errors='coerce').fillna(0).astype(int)
+                            st.dataframe(df_ret_exib, width='stretch', hide_index=True)
+                            
+                    if not encontrou_retorno:
+                        if not _hist_vazio_pa_bruto.empty and "Mapa" in _hist_vazio_pa_bruto.columns:
+                            indiv_encontrados = _hist_vazio_pa_bruto[_hist_vazio_pa_bruto["Mapa"].astype(str) == str(mapa_limpo)]
+                            if not indiv_encontrados.empty:
+                                encontrou_retorno = True
+                                df_ret_exib = indiv_encontrados[["Familia", "Caixas", "Garrafas", "Garrafeiras", "Unidades"]].copy()
+                                for c in ["Caixas", "Garrafas", "Garrafeiras", "Unidades"]:
+                                    df_ret_exib[c] = pd.to_numeric(df_ret_exib[c], errors='coerce').fillna(0).astype(int)
+                                st.dataframe(df_ret_exib, width='stretch', hide_index=True)
+
+                    if not encontrou_retorno:
+                        st.caption("Nenhum retorno físico foi digitado para este mapa ainda.")
+
+        else:
+            with st.expander("📄 Ver tabela completa de conciliações", expanded=True):
+                renderizar_tabela_limpa(df_display, colunas_exibir_pa)
 
 
 # =========================================================================
