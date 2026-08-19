@@ -1530,7 +1530,7 @@ with aba_conciliacao:
         ])
         
         st.write("")
-        with st.expander("📄 Ver tabela completa de conciliações", expanded=True):
+        with st.expander("📄 Ver tabela completa de conciliações", expanded=False):
             renderizar_tabela_limpa(df_display[colunas_exibir_pa].sort_values(by=["Mapa", "Familia"]), colunas_exibir_pa)
 
 
