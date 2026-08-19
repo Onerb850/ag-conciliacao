@@ -78,9 +78,6 @@ def rotulo_conferencia(fam: str) -> str:
         return "600 (Âmbar + Verde)"
     return rotulo_familia_vazio(fam)
 
-# Mesma paleta usada em cor_linha_status — cada status vira o fundo pastel e o emoji
-# gigante do "cartão de resultado" nos resumos "pra enviar", e também alimenta a
-# tabela "estilo limpo" (pill de status) usada nos blocos de detalhe.
 CORES_RESUMO = {
     "verde": ("#EAF3DE", "#173404"),
     "vermelho": ("#FCEBEB", "#501313"),
@@ -98,11 +95,7 @@ ICONES_RESUMO = {
 
 
 def renderizar_cards_resumo(itens: list[tuple[str, int, str]] | list[tuple[str, int, str, list[str] | None]]) -> None:
-    """itens: lista de (rotulo, valor, cor) ou (rotulo, valor, cor, detalhes) — cor é uma
-    chave de CORES_RESUMO. detalhes (opcional) é uma lista de linhas curtas mostradas
-    dentro do card quando valor > 0 (ex: qual mapa/item está causando aquele número).
-    Visual compacto: badge inline (ícone+número+rótulo numa linha só), detalhes como
-    texto pequeno logo abaixo, sem cartão gigante."""
+    """Renderiza cartões de resumo compactos."""
     colunas = st.columns(len(itens))
     for col, item in zip(colunas, itens):
         rotulo, valor, cor = item[0], item[1], item[2]
@@ -137,8 +130,6 @@ def renderizar_cards_resumo(itens: list[tuple[str, int, str]] | list[tuple[str, 
         col.markdown(html_card, unsafe_allow_html=True)
 
 
-# Paleta inspirada no "FAROL AG" do usuário: cada família de garrafa tem uma cor de
-# identidade própria (faixa escura no topo do card + fundo pastel no corpo).
 CORES_FAROL_FAMILIA = {
     "600ml": ("#1F3B57", "#EAF1F8"),
     "Verde 600": ("#1F4720", "#E9F5EA"),
@@ -149,11 +140,6 @@ ORDEM_FAROL_FAMILIA = ["600ml", "Verde 600", "300ml", "1L"]
 
 
 def renderizar_farol_previsao(dados_familia: dict, dados_outros: dict) -> None:
-    """Visual tipo 'FAROL AG': um card colorido por família de garrafa (300/600/Verde/
-    Litrão) mostrando Caixas + garrafas soltas, e uma segunda fileira de cards escuros
-    pros itens que não convertem em caixa (Garrafeira, Pallet, Chapatex, Barril),
-    mostrando só a unidade. dados_familia: {familia: {"caixas": int, "soltas": int}}.
-    dados_outros: {rótulo: unidades}."""
     familias_com_dado = [f for f in ORDEM_FAROL_FAMILIA if f in dados_familia]
     if familias_com_dado:
         cols = st.columns(len(familias_com_dado))
@@ -190,8 +176,6 @@ def renderizar_farol_previsao(dados_familia: dict, dados_outros: dict) -> None:
 
 
 def extrair_dados_farol(df_subset: pd.DataFrame, lookup_map: dict) -> tuple[dict, dict]:
-    """Processa um subconjunto de dados de saída e devolve os dicionários
-    de garrafas (caixas+soltas) e outros itens (unidades) para o farol."""
     if df_subset.empty:
         return {}, {}
 
@@ -233,8 +217,6 @@ def extrair_dados_farol(df_subset: pd.DataFrame, lookup_map: dict) -> tuple[dict
 
 
 def _chave_cor_status(status: str) -> str:
-    """Resolve a chave de CORES_RESUMO a partir do emoji presente no texto de status —
-    mesma lógica de cor_linha_status(), mas devolvendo a chave em vez do CSS pronto."""
     s = str(status)
     if "✅" in s: return "verde"
     if "❌" in s: return "vermelho"
@@ -245,8 +227,6 @@ def _chave_cor_status(status: str) -> str:
 
 
 def _pill_status(status: str) -> str:
-    """Status como pill arredondado (fundo pastel, texto curto) em vez de célula/linha
-    inteira colorida — usado por renderizar_tabela_limpa()."""
     cor_key = _chave_cor_status(status)
     bg, fg = CORES_RESUMO[cor_key]
     rotulo = str(status)
@@ -260,7 +240,6 @@ def _pill_status(status: str) -> str:
 
 
 def _cor_diferenca(texto) -> str:
-    """Verde pra entrada/sobra (+), vermelho pra falta (-) — aplicado só na coluna Diferença."""
     t = str(texto).strip()
     if t.startswith("+"): return "#0F6E56"
     if t.startswith("-"): return "#A32D2D"
@@ -268,11 +247,6 @@ def _cor_diferenca(texto) -> str:
 
 
 def renderizar_tabela_limpa(df: pd.DataFrame, colunas: list[str], col_status: str = "Status") -> None:
-    """Tabela HTML em estilo 'planilha limpa': cabeçalho discreto em cinza, linhas finas
-    separadas por hairline, primeira coluna alinhada à esquerda e as demais à direita,
-    coluna Diferença colorida por sinal, e Status como pill em vez de linha/célula
-    inteira pintada. Substitui st.dataframe(...).style.map(cor_linha_status) nos blocos
-    de 'itens com diferença' das abas de conciliação."""
     if df.empty:
         st.caption("Nenhum registro.")
         return
@@ -325,8 +299,6 @@ with st.sidebar:
         "Considerar mapas do CONC.csv no período:",
         value=(date(2026, 8, 1), date.today()),
     )
-    # date_input com range só retorna as duas datas depois que o usuário escolhe as duas
-    # no calendário — enquanto só a primeira estiver selecionada, vem uma tupla de 1 item.
     if isinstance(intervalo_datas, tuple) and len(intervalo_datas) == 2:
         data_inicio, data_fim = intervalo_datas
     else:
@@ -344,16 +316,13 @@ with st.sidebar:
 if modo_simulacao:
     st.warning("🧪 **MODO SIMULAÇÃO ATIVO** — os dados de conferência abaixo são de teste, não reais. Desative na sidebar pra voltar ao normal.")
 
-# --- De Material: usado pra classificar por Código e pra filtrar itens válidos de AG ---
+# --- De Material ---
 df_de_material = carregar(ARQUIVO_DE_MATERIAL)
 if df_de_material is not None and "Promax" in df_de_material.columns:
     df_de_material["Promax"] = normalizar_codigo(df_de_material["Promax"])
 lookup_ag = montar_lookup_ag_por_codigo(df_de_material) if df_de_material is not None else {}
 
-# --- Mapa PA: diz de qual PA é cada mapa numa data — alimenta a busca automática de
-# mapas na Conferência em Lote, pra o conferente não precisar digitar número nenhum.
-# Coluna opcional "MAPA CONSOLIDADO": quando vários mapas viram um só no relatório
-# (ex: 257682 + 257685 → 257693), essa coluna traz o número final pra cada original.
+# --- Mapa PA ---
 df_mapa_pa = carregar(ARQUIVO_MAPA_PA)
 MAPA_CONSOLIDADO_LOOKUP: dict[str, str] = {}
 if df_mapa_pa is not None:
@@ -389,29 +358,15 @@ if df_mapa_pa is not None:
 
 @st.cache_data(show_spinner=False, ttl=300)
 def _ingerir_conc_no_historico(_df_conc_limpo: pd.DataFrame) -> pd.DataFrame:
-    """Acumula o CONC.csv atual (já limpo: Data/Mapa/PA/MapaConsolidado) num histórico
-    permanente — assim, mesmo substituindo o CONC.csv todo dia, um mapa de um dia
-    anterior que ainda não foi conferido continua aparecendo nas conciliações, em vez
-    de sumir quando o arquivo do dia é trocado. Cacheado 5 min (igual carregar()) pra
-    não gravar no Drive a cada interação do usuário na tela."""
     colunas_manter = [c for c in ["Data", "Mapa", "PA", "MapaConsolidado"] if c in _df_conc_limpo.columns]
     return acumular_historico(_df_conc_limpo[colunas_manter], "MapaPAHistorico", ["Data", "Mapa"])
 
 
 if df_mapa_pa is not None and not df_mapa_pa.empty:
-    # Acumula no histórico (MapaPAHistorico) — necessário pra Previsão de Contagem e
-    # o Fechamento conseguirem consultar dias anteriores, mesmo depois do CONC.csv de
-    # hoje substituir o de ontem. O risco de "mapa fantasma" (erro/teste de uma versão
-    # antiga que nunca mais sai do histórico) é tratado à parte: o alerta de
-    # integridade (sidebar) avisa quando isso acontece, e a ferramenta "Limpar
-    # registro antigo" (aba Vazio por PA) deixa você remover na hora, se precisar.
     df_mapa_pa = _ingerir_conc_no_historico(df_mapa_pa)
 else:
     df_mapa_pa = ler_aba_historico("MapaPAHistorico")
 
-# O Excel guarda/relê "Mapa" e "MapaConsolidado" como número quando o texto parece um
-# número puro — isso corrompe o tipo (vira NaN/float em vez de string) e quebra tudo
-# que espera string. Relimpa sempre que o histórico vem de volta do Drive.
 if df_mapa_pa is not None and not df_mapa_pa.empty:
     if "Mapa" in df_mapa_pa.columns:
         df_mapa_pa["Mapa"] = df_mapa_pa["Mapa"].apply(limpar_numero_robusto)
@@ -431,14 +386,10 @@ if df_mapa_pa is not None and not df_mapa_pa.empty:
 
 
 def resolver_mapa(mapa: str) -> str:
-    """Se o mapa foi consolidado em outro (planilha CONC, coluna MAPA CONSOLIDADO),
-    devolve o número final — senão devolve o próprio mapa sem alteração."""
     return MAPA_CONSOLIDADO_LOOKUP.get(mapa, mapa)
 
 
 def resolver_mapas(mapas) -> list[str]:
-    """Aplica resolver_mapa numa lista, sem duplicar quando vários originais caem no
-    mesmo mapa consolidado (ex: 257682 e 257685 os dois viram 257693 uma vez só)."""
     resolvidos: list[str] = []
     vistos: set[str] = set()
     for m in mapas:
@@ -449,16 +400,12 @@ def resolver_mapas(mapas) -> list[str]:
     return resolvidos
 
 
-# Sentido inverso — dado o mapa consolidado, quais originais viraram ele. Usado só pra
-# deixar a exibição clara ("257682+257685 (→257693)") sem mudar o cálculo.
 REVERSE_MAPA_CONSOLIDADO: dict[str, list[str]] = {}
 for _orig, _cons in MAPA_CONSOLIDADO_LOOKUP.items():
     REVERSE_MAPA_CONSOLIDADO.setdefault(_cons, []).append(_orig)
 
 
 def rotulo_mapa(mapa: str) -> str:
-    """Número do mapa pra exibição — se ele é um consolidado de vários originais,
-    mostra 'orig1+orig2 (→consolidado)'; senão mostra o número normalmente."""
     originais = REVERSE_MAPA_CONSOLIDADO.get(mapa)
     if not originais:
         return mapa
@@ -467,35 +414,20 @@ def rotulo_mapa(mapa: str) -> str:
 
 
 def buscar_mapas_por_data_pa(data_alvo, pa_alvo: str) -> list[str]:
-    """Consulta df_mapa_pa e devolve os números de mapa cadastrados pra essa Data+PA —
-    é isso que substitui o campo de digitação manual na Conferência em Lote. Devolve os
-    números ORIGINAIS (não resolvidos) — a resolução de consolidação acontece só na
-    hora de buscar a Saída, não aqui."""
     if df_mapa_pa is None or df_mapa_pa.empty or "Data" not in df_mapa_pa.columns or "PA" not in df_mapa_pa.columns:
         return []
     data_str = data_alvo.strftime("%d/%m/%Y")
-    # Normaliza os dois lados (planilha às vezes vem "TIANGUA" sem acento) antes de
-    # comparar, senão "TIANGUA" != "Tianguá" e o mapa nunca é encontrado.
     pa_alvo_norm = _PA_NORMALIZADO.get(pa_alvo.strip().upper(), pa_alvo).upper()
     pa_bate = df_mapa_pa["PA"].apply(lambda v: _PA_NORMALIZADO.get(str(v).strip().upper(), v).upper() == pa_alvo_norm)
     sub = df_mapa_pa[(df_mapa_pa["Data"] == data_str) & pa_bate]
     return sorted(sub["Mapa"].dropna().unique().tolist(), key=lambda m: int(m) if str(m).isdigit() else 0)
 
 
-# =========================================================================
-# 02.05.01.csv — usado SÓ como fonte de Saída pra Previsão de Contagem (é puro
-# "o que saiu tem que voltar", código de Operação 554). Sede e Outras Categorias
-# continuam usando o 03.07.13, que traz Retorno e as categorias extras que o
-# 02.05.01 não tem. Acumula num histórico próprio, mesmo padrão do CONC/03.07.13,
-# pra sobreviver à substituição diária do arquivo.
-# =========================================================================
 ARQUIVO_020501 = PASTA_PROJETO / "02.05.01.csv"
 NOME_ABA_020501_HISTORICO = "Relatorio020501Historico"
 
 
 def parse_qtde_entrada_robusta(serie: pd.Series) -> pd.Series:
-    """'2.592/00' -> 2592.00 — formato do 02.05.01: '.' separa milhar, '/' faz as
-    vezes de vírgula decimal."""
     s = serie.astype(str).str.strip()
     s = s.str.replace(".", "", regex=False)
     s = s.str.replace("/", ".", regex=False)
@@ -536,9 +468,6 @@ if df_020501_historico is not None and not df_020501_historico.empty:
 
 
 def calcular_saida_familias(mapas_resolvidos: list[str]) -> dict[str, int]:
-    """Soma a Saída (02.05.01) de um conjunto de mapas, por família (300ml/600ml/1L,
-    já com 600 Âmbar+Verde combinados) — usado pra mostrar Bateu/Faltou/Sobrou na hora,
-    direto na tela de conferência, sem precisar ir na aba de Conciliação."""
     if df_020501_historico is None or df_020501_historico.empty or not mapas_resolvidos:
         return {}
     fam_tipo_calc = df_020501_historico["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
@@ -553,8 +482,6 @@ def calcular_saida_familias(mapas_resolvidos: list[str]) -> dict[str, int]:
 
 
 def formata_un_em_cx(qtd: int, familia: str) -> str:
-    """Converte unidades soltas em 'X cx' ou 'X cx + Y un' — mesmo padrão usado no
-    resto do app, pro status na hora não mostrar número gigante de garrafa solta."""
     fator = int(fator_conversao_caixas(familia)) or 1
     qtd = int(qtd)
     cx, un = qtd // fator, qtd % fator
@@ -567,17 +494,10 @@ def formata_un_em_cx(qtd: int, familia: str) -> str:
 
 
 def formata_dif_em_cx(dif: int, familia: str) -> str:
-    """Igual formata_un_em_cx, mas com sinal — pra coluna Diferença."""
     sinal = "+" if dif > 0 else ("-" if dif < 0 else "")
     return f"{sinal}{formata_un_em_cx(abs(int(dif)), familia)}" if dif != 0 else "0"
 
 
-# =========================================================================
-# CONC.csv é a fonte única de verdade de QUAIS MAPAS e QUAIS DATAS entram em
-# cada conciliação — o relatório 03.07.13 só é usado pra consultar valores por
-# número de mapa, nunca pra decidir se um mapa entra ou não. O filtro de
-# período da sidebar agora escopa o CONC.csv (não mais o relatório).
-# =========================================================================
 _PA_NORMALIZADO = {"TIANGUÁ": "Tianguá", "TIANGUA": "Tianguá", "GRANJA": "Granja", "SEDE": "Sede"}
 
 df_mapa_pa_periodo = df_mapa_pa
@@ -585,11 +505,7 @@ if df_mapa_pa is not None and not df_mapa_pa.empty and "Data" in df_mapa_pa.colu
     _dt_conc = pd.to_datetime(df_mapa_pa["Data"], dayfirst=True, errors="coerce")
     df_mapa_pa_periodo = df_mapa_pa[(_dt_conc >= pd.Timestamp(data_inicio)) & (_dt_conc <= pd.Timestamp(data_fim))]
 
-# {mapa_resolvido: "Tianguá"/"Granja"/"Sede"} — dita o roteamento entre as abas.
 MAPA_PA_CLASSIFICACAO: dict[str, str] = {}
-# {mapa_resolvido: "dd/mm/aaaa"} — data do mapa segundo o CONC.csv, independente de
-# ter conferência lançada ou não. Usada no Fechamento pra achar mapas sem retorno
-# ainda (que não têm data de retorno pra filtrar), evitando que sumam da tela.
 MAPA_DATA_CONC: dict[str, str] = {}
 if df_mapa_pa_periodo is not None and not df_mapa_pa_periodo.empty and "PA" in df_mapa_pa_periodo.columns:
     for _, _linha_conc in df_mapa_pa_periodo.iterrows():
@@ -612,10 +528,6 @@ with st.sidebar:
             f"CONC.csv: {len(MAPA_PA_CLASSIFICACAO)} mapa(s) no período ({_periodo_str})."
         )
 
-        # Verificação de integridade: todo mapa do CONC.csv (Tianguá, Granja e Sede)
-        # deveria existir no 02.05.01 — única fonte de Saída do app agora. Se não
-        # existir, a Saída conta como 0 (não "falta", só invisível), o que pode
-        # mascarar ou distorcer números de conciliação/previsão.
         mapas_no_020501 = set(df_020501_historico["Mapa"].unique()) if df_020501_historico is not None and not df_020501_historico.empty else set()
         mapas_conc_sem_relatorio = set(MAPA_PA_CLASSIFICACAO.keys()) - mapas_no_020501
 
@@ -634,10 +546,6 @@ with st.sidebar:
 
 
 def gerar_simulacao_perfeita(data_alvo) -> pd.DataFrame:
-    """Pra cada mapa Tianguá/Granja do CONC.csv na data escolhida, monta uma linha de
-    retorno = saída exata (garrafas soltas, sem caixas/garrafeiras/unidades) — simula
-    uma conferência 100% perfeita, só pra teste visual. Ignora consolidação de mapas
-    (rara em Tianguá/Granja) usando direto o número resolvido."""
     if df_mapa_pa is None or df_mapa_pa.empty or df_020501_historico is None or df_020501_historico.empty:
         return pd.DataFrame()
 
@@ -681,21 +589,11 @@ aba_vazio_pa, aba_conciliacao, aba_conciliacao_sede = st.tabs(
     ["Vazio por PA", "Conciliação Mapas PA", "Previsão Sede"]
 )
 
-# Roteamento entre as abas agora vem do CONC.csv (MAPA_PA_CLASSIFICACAO), não mais de
-# "foi digitado ou não". MAPAS_INDIVIDUAIS/MAPAS_EM_LOTE continuam existindo só pra
-# saber o que já foi conferido (usado no cruzamento de Retorno), não pra roteamento.
 def mapas_da_lote(mapas_str: str) -> list[str]:
-    """'257379;257386;257402' -> ['257379','257386','257402'] — ';' é o separador usado
-    pra guardar o conjunto de mapas de uma conferência em lote numa única célula."""
     return [limpa_mapa(m) for m in str(mapas_str).split(";") if str(m).strip()]
 
 
 _hist_vazio_pa_bruto = ler_aba_historico(NOME_ABA_SIMULACAO if modo_simulacao else "VazioPA")
-# Usado em todo o formulário/tabela/edição/exclusão da aba "Vazio por PA" — com a
-# simulação ativa, a aba inteira vira um sandbox isolado (lê e grava só na aba de
-# simulação); desativada, volta a mexer só na aba real "VazioPA". O Lote segue o
-# mesmo toggle agora — simulação precisa estar 100% isolada de dado real (Lote
-# incluso), senão um lote de teste antigo contamina silenciosamente a conta.
 ABA_VAZIO_PA_ATIVA = NOME_ABA_SIMULACAO if modo_simulacao else "VazioPA"
 ABA_LOTE_ATIVA = NOME_ABA_LOTE_SIMULACAO if modo_simulacao else "VazioPALote"
 if not _hist_vazio_pa_bruto.empty and "Mapa" in _hist_vazio_pa_bruto.columns:
@@ -710,18 +608,85 @@ if not _hist_lote_bruto.empty and "Mapas" in _hist_lote_bruto.columns:
         MAPAS_EM_LOTE.update(mapas_da_lote(_mapas_str))
 
 
-
 # =========================================================================
 # ABA VAZIO POR PA (conferência física digitada pelo conferente)
 # =========================================================================
 with aba_vazio_pa:
     st.caption("Conferência do vazio por PA e mapa.")
 
+    # =====================================================================
+    # 🚦 NOVO: PAINEL DE PENDÊNCIAS DE LANÇAMENTO (TIANGUÁ / GRANJA)
+    # =====================================================================
+    st.markdown("### 🚦 Painel de Pendências de Lançamento (PAs)")
+    st.caption("Acompanhe quais mapas de PA da data abaixo já foram conferidos e quais ainda faltam.")
+    
+    col_dt_chk, col_info_chk = st.columns([1, 3])
+    data_painel_chk = col_dt_chk.date_input("Data da Descarga / Fechamento", value=date.today(), key="data_painel_pendencias")
+    data_painel_chk_str = data_painel_chk.strftime("%d/%m/%Y")
+
+    # Identifica mapas de Tianguá e Granja no CONC.csv nessa data
+    mapas_conc_dia = {}
+    if df_mapa_pa is not None and not df_mapa_pa.empty and "Data" in df_mapa_pa.columns and "PA" in df_mapa_pa.columns:
+        sub_conc_painel = df_mapa_pa[df_mapa_pa["Data"] == data_painel_chk_str].copy()
+        for _, r_c in sub_conc_painel.iterrows():
+            pa_nome = _PA_NORMALIZADO.get(str(r_c["PA"]).strip().upper(), str(r_c["PA"]).strip())
+            if pa_nome in ("Tianguá", "Granja"):
+                mapas_conc_dia.setdefault(pa_nome, set()).add(limpar_numero_robusto(r_c["Mapa"]))
+
+    # Identifica o que já foi lançado no VazioPA e VazioPALote PARA ESTA DATA
+    mapas_lancados_dia = set()
+    
+    hist_lote_chk = ler_aba_historico(ABA_LOTE_ATIVA)
+    if not hist_lote_chk.empty and "Data" in hist_lote_chk.columns and "Mapas" in hist_lote_chk.columns:
+        sub_lote_chk = hist_lote_chk[hist_lote_chk["Data"] == data_painel_chk_str]
+        for m_str in sub_lote_chk["Mapas"].unique():
+            mapas_lancados_dia.update(mapas_da_lote(m_str))
+
+    hist_indiv_chk = ler_aba_historico(ABA_VAZIO_PA_ATIVA)
+    if not hist_indiv_chk.empty and "Data" in hist_indiv_chk.columns and "Mapa" in hist_indiv_chk.columns:
+        sub_indiv_chk = hist_indiv_chk[hist_indiv_chk["Data"] == data_painel_chk_str]
+        for m_indiv in sub_indiv_chk["Mapa"].unique():
+            mapas_lancados_dia.add(limpar_numero_robusto(m_indiv))
+
+    if not mapas_conc_dia:
+        st.info(f"Nenhum mapa cadastrado para Tianguá ou Granja em {data_painel_chk_str} no CONC.csv.")
+    else:
+        total_esperado = sum(len(m_set) for m_set in mapas_conc_dia.values())
+        todos_mapas_pa_dia = set.union(*mapas_conc_dia.values())
+        total_lancados = len(todos_mapas_pa_dia & mapas_lancados_dia)
+        total_pendentes = total_esperado - total_lancados
+
+        renderizar_cards_resumo([
+            ("Total de Mapas PA", total_esperado, "azul"),
+            ("Mapas Lançados", total_lancados, "verde"),
+            ("Mapas Pendentes", total_pendentes, "vermelho" if total_pendentes > 0 else "verde"),
+        ])
+
+        st.write("")
+        cols_pa_chk = st.columns(len(mapas_conc_dia))
+        for col_p, (nome_pa_chk, conjunto_mapas) in zip(cols_pa_chk, sorted(mapas_conc_dia.items())):
+            mapas_ordenados = sorted(conjunto_mapas, key=lambda x: int(x) if str(x).isdigit() else 0)
+            lancados_pa = [m for m in mapas_ordenados if m in mapas_lancados_dia]
+            pendentes_pa = [m for m in mapas_ordenados if m not in mapas_lancados_dia]
+            
+            with col_p:
+                st.markdown(f"**🚛 {nome_pa_chk}** ({len(lancados_pa)}/{len(mapas_ordenados)} lançados)")
+                
+                # HTML com Badges/Crachás
+                badges_html = []
+                for m in lancados_pa:
+                    badges_html.append(f'<span style="background:#EAF3DE; color:#173404; font-size:12px; font-weight:700; padding:3px 9px; border-radius:6px; margin:2px; display:inline-block;">✅ {m}</span>')
+                for m in pendentes_pa:
+                    badges_html.append(f'<span style="background:#FCEBEB; color:#501313; font-size:12px; font-weight:700; padding:3px 9px; border-radius:6px; margin:2px; display:inline-block;">⏳ {m}</span>')
+                
+                st.markdown(f'<div style="background:#F8F9FA; padding:10px; border-radius:8px; border:1px solid #E9ECEF;">{"".join(badges_html)}</div>', unsafe_allow_html=True)
+
+    st.divider()
     st.markdown("### ✍️ Conferência Manual (um ou vários mapas)")
-    st.caption("Digite um mapa só, ou vários separados por vírgula (pode misturar PA e Sede) — o total informado abaixo vale pra soma de todos eles juntos. A PA de cada mapa é detectada sozinha pelo CONC.csv.")
+    st.caption("Digite um mapa só, ou vários separados por vírgula — o total informado abaixo vale pra soma de todos eles juntos.")
 
     col_data_manual, col_mapas_manual = st.columns([1, 2])
-    data_manual = col_data_manual.date_input("Data da Descarga", value=date.today(), key="data_vazio_manual")
+    data_manual = col_data_manual.date_input("Data da Descarga", value=data_painel_chk, key="data_vazio_manual")
     mapas_texto_manual = col_mapas_manual.text_input(
         "Números dos Mapas (separados por vírgula)",
         placeholder="ex: 257828, 257829, 257847",
@@ -736,9 +701,6 @@ with aba_vazio_pa:
     data_manual_str = data_manual.strftime("%d/%m/%Y")
     mapas_chave_manual = ";".join(mapas_manual_limpos)
 
-    # Já busca aqui fora (não só dentro do form) o que já está salvo pra esse
-    # conjunto exato de mapas, e a Saída real deles — assim dá pra mostrar
-    # Bateu/Faltou/Sobrou na hora, sem precisar salvar antes ou ir noutra aba.
     valores_existentes_manual = {}
     if mapas_chave_manual:
         hist_manual_atual = ler_aba_historico(ABA_LOTE_ATIVA)
@@ -857,15 +819,13 @@ with aba_vazio_pa:
     st.caption("Use quando só souber o TOTAL, sem separar por mapa.")
 
     col_data_l, col_pa_l = st.columns(2)
-    data_lote = col_data_l.date_input("Data da Descarga", value=date.today(), key="data_lote")
+    data_lote = col_data_l.date_input("Data da Descarga", value=data_painel_chk, key="data_lote")
     pa_lote = col_pa_l.selectbox("PA", ["Tianguá", "Granja"], key="pa_lote")
 
     mapas_lote_auto = buscar_mapas_por_data_pa(data_lote, pa_lote)
     data_lote_str_atual = data_lote.strftime("%d/%m/%Y")
     mapas_chave_atual = ";".join(mapas_lote_auto) if mapas_lote_auto else ""
 
-    # Busca aqui fora (não só dentro do form) o que já está salvo, e a Saída real —
-    # assim dá pra mostrar Bateu/Faltou/Sobrou na hora.
     valores_existentes_lote = {}
     if mapas_chave_atual:
         hist_lote_atual = ler_aba_historico(ABA_LOTE_ATIVA)
@@ -879,7 +839,7 @@ with aba_vazio_pa:
                 valores_existentes_lote[r["Familia"]] = r
 
     if df_mapa_pa is None or df_mapa_pa.empty:
-        st.error(f"Não encontrei '{ARQUIVO_MAPA_PA.name}' no Google Drive nem histórico acumulado ainda — sem isso não dá pra buscar os mapas automaticamente.")
+        st.error(f"Não encontrei '{ARQUIVO_MAPA_PA.name}' no Google Drive nem histórico acumulado ainda.")
     elif mapas_lote_auto:
         st.success(f"{len(mapas_lote_auto)} mapa(s) de {pa_lote} em {data_lote.strftime('%d/%m/%Y')}: {', '.join(mapas_lote_auto)}")
 
@@ -976,19 +936,18 @@ with aba_vazio_pa:
                     st.warning("Nenhuma quantidade foi informada para salvar.")
 
     # =====================================================================
-    # 📋 NOVO: RESUMO ACUMULADO DO DIA (LOGO ABAIXO DOS FORMULÁRIOS)
+    # 📋 RESUMO ACUMULADO DO DIA
     # =====================================================================
     st.divider()
     st.markdown("### 📋 Resumo Acumulado do Dia (Saída vs Retorno)")
     st.caption("Acompanhe o status de todas as conferências que você já salvou para a data abaixo.")
     
     col_res1, col_res2 = st.columns([1, 3])
-    data_resumo = col_res1.date_input("Data do Resumo", value=data_manual, key="data_resumo_diario")
+    data_resumo = col_res1.date_input("Data do Resumo", value=data_painel_chk, key="data_resumo_diario")
     data_resumo_str = data_resumo.strftime("%d/%m/%Y")
 
     linhas_resumo_diario = []
 
-    # 1. Pega do histórico de LOTES (que agora também recebe os lançamentos manuais)
     hist_lote_resumo = ler_aba_historico(ABA_LOTE_ATIVA)
     if not hist_lote_resumo.empty and "Data" in hist_lote_resumo.columns:
         hist_lote_dia = hist_lote_resumo[hist_lote_resumo["Data"] == data_resumo_str]
@@ -1021,7 +980,6 @@ with aba_vazio_pa:
                     "Status": status_txt,
                 })
 
-    # 2. Pega do histórico INDIVIDUAL (legado/edições feitas na aba de exclusão)
     hist_indiv_resumo = ler_aba_historico(ABA_VAZIO_PA_ATIVA)
     if not hist_indiv_resumo.empty and "Data" in hist_indiv_resumo.columns:
         hist_indiv_dia = hist_indiv_resumo[hist_indiv_resumo["Data"] == data_resumo_str]
@@ -1044,7 +1002,6 @@ with aba_vazio_pa:
                 dif = retorno_fam - saida_fam
                 status_txt = "✅ Bateu" if dif == 0 else ("❌ Faltou" if dif < 0 else "⚠️ Sobrou")
                 
-                # Evita duplicar na tela se por acaso estiver salvo em ambos os formatos
                 ja_existe = any(str(x["Mapas/Lote"]) == str(mapa_r) and x["Item"] == rotulo_conferencia(familia) for x in linhas_resumo_diario)
                 if not ja_existe:
                     linhas_resumo_diario.append({
@@ -1059,16 +1016,14 @@ with aba_vazio_pa:
 
     if linhas_resumo_diario:
         df_resumo = pd.DataFrame(linhas_resumo_diario)
-        # Organiza para ficar bonito
         df_resumo = df_resumo.sort_values(by=["PA", "Mapas/Lote", "Item"])
         renderizar_tabela_limpa(df_resumo, ["PA", "Mapas/Lote", "Item", "Saída", "Retorno", "Diferença", "Status"])
     else:
-        st.info(f"Nenhuma conferência (Saída ou Retorno) encontrada para a data {data_resumo_str}.")
+        st.info(f"Nenhuma conferência encontrada para a data {data_resumo_str}.")
 
     # =====================================================================
-    # A PARTIR DAQUI: só telas de conferência (tabelas, edição, exclusão)
+    # EDIÇÃO E EXCLUSÃO
     # =====================================================================
-
     df_vazio_pa = ler_aba_historico(ABA_VAZIO_PA_ATIVA)
     if not df_vazio_pa.empty:
         st.divider()
@@ -1125,7 +1080,7 @@ with aba_vazio_pa:
                     pa_atual = pa_padrao
                     st.caption(f"Novo: Mapa {edit_mapa} · {pa_atual} · {edit_data} · {edit_familia}")
 
-                st.caption("💡 **Atenção:** Para bebidas (300ml, 600ml, 1L), altere apenas as **Caixas**. As garrafas serão recalculadas sozinhas ao salvar. Para outros itens, altere as **Unidades**.")
+                st.caption("💡 **Atenção:** Para bebidas (300ml, 600ml, 1L), altere apenas as **Caixas**. As garrafas serão recalculadas sozinhas ao salvar.")
                 ce1, ce2, ce3, ce4 = st.columns(4)
                 novo_caixas = ce1.number_input("Caixas", min_value=0, step=1, value=int(linha_atual.get("Caixas", 0)) if isinstance(linha_atual, pd.Series) else 0, key="edit_caixas")
                 novo_garrafas = ce2.number_input("Garrafas", min_value=0, step=1, value=int(linha_atual.get("Garrafas", 0)) if isinstance(linha_atual, pd.Series) else 0, key="edit_garrafas")
@@ -1223,7 +1178,7 @@ with aba_vazio_pa:
                     pa_atual_lote = pa_padrao_lote
                     st.caption(f"Novo: Lote {', '.join(mapas_da_lote(edit_lote_chave))} · {pa_atual_lote} · {edit_data_lote} · {edit_familia_lote}")
 
-                st.caption("💡 **Atenção:** Para bebidas (300ml, 600ml, 1L), altere apenas as **Caixas**. As garrafas serão recalculadas sozinhas ao salvar. Para outros itens, altere as **Unidades**.")
+                st.caption("💡 **Atenção:** Para bebidas (300ml, 600ml, 1L), altere apenas as **Caixas**. As garrafas serão recalculadas sozinhas ao salvar.")
                 cel3, cel4, cel5, cel6 = st.columns(4)
                 novo_caixas_lote = cel3.number_input("Caixas", min_value=0, step=1, value=int(linha_atual_lote.get("Caixas", 0)) if isinstance(linha_atual_lote, pd.Series) else 0, key="edit_caixas_lote")
                 novo_garrafas_lote = cel4.number_input("Garrafas", min_value=0, step=1, value=int(linha_atual_lote.get("Garrafas", 0)) if isinstance(linha_atual_lote, pd.Series) else 0, key="edit_garrafas_lote")
@@ -1277,69 +1232,11 @@ with aba_vazio_pa:
                 st.rerun()
 
     st.divider()
-    with st.expander("☑️ Checklist de mapas lançados", expanded=False):
-        st.caption("Marca sozinho quem já tem retorno digitado (individual ou lote) — os demais você marca manualmente conforme for conferindo.")
-        col_chk1, col_chk2 = st.columns(2)
-        data_checklist = col_chk1.date_input("Data", value=date.today(), key="data_checklist")
-        pa_checklist = col_chk2.selectbox("PA", ["Tianguá", "Granja", "Sede"], key="pa_checklist")
-
-        data_checklist_str = data_checklist.strftime("%d/%m/%Y")
-        mapas_checklist = []
-        if df_mapa_pa is not None and not df_mapa_pa.empty:
-            pa_norm_alvo_chk = _PA_NORMALIZADO.get(pa_checklist.strip().upper(), pa_checklist).upper()
-            pa_bate_chk = df_mapa_pa["PA"].apply(lambda v: _PA_NORMALIZADO.get(str(v).strip().upper(), v).upper() == pa_norm_alvo_chk)
-            mapas_checklist = sorted(
-                df_mapa_pa[(df_mapa_pa["Data"] == data_checklist_str) & pa_bate_chk]["Mapa"].dropna().unique().tolist(),
-                key=lambda m: int(m) if str(m).isdigit() else 0,
-            )
-
-        if not mapas_checklist:
-            st.info(f"Nenhum mapa cadastrado pra {pa_checklist} em {data_checklist_str} no CONC.csv.")
-        else:
-            MAPAS_JA_LANCADOS = MAPAS_INDIVIDUAIS | MAPAS_EM_LOTE
-            df_checklist_hist = ler_aba_historico("MapaChecklist")
-            checklist_manual = set()
-            if not df_checklist_hist.empty and "Data" in df_checklist_hist.columns:
-                checklist_manual = set(df_checklist_hist[df_checklist_hist["Data"] == data_checklist_str]["Mapa"].astype(str))
-
-            estados_novos = {}
-            cols_chk = st.columns(4)
-            for i, mapa_c in enumerate(mapas_checklist):
-                marcado_auto = mapa_c in MAPAS_JA_LANCADOS
-                valor_inicial = marcado_auto or (mapa_c in checklist_manual)
-                col = cols_chk[i % 4]
-                estados_novos[mapa_c] = col.checkbox(
-                    mapa_c, value=valor_inicial, key=f"chk_mapa_{data_checklist_str}_{pa_checklist}_{mapa_c}",
-                    disabled=marcado_auto,
-                    help="Já tem retorno lançado" if marcado_auto else "Marcação manual — só pra acompanhamento",
-                )
-
-            qtd_marcados = sum(estados_novos.values())
-            st.caption(f"{qtd_marcados} de {len(mapas_checklist)} mapa(s) marcados.")
-
-            if st.button("💾 Salvar checklist", key="salvar_checklist"):
-                linhas_checklist = [
-                    {"Data": data_checklist_str, "PA": pa_checklist, "Mapa": m, "Checado": 1}
-                    for m, marcado in estados_novos.items() if marcado and m not in MAPAS_JA_LANCADOS
-                ]
-                if linhas_checklist:
-                    acumular_historico(pd.DataFrame(linhas_checklist), "MapaChecklist", ["Data", "Mapa"])
-                desmarcados = [m for m, marcado in estados_novos.items() if not marcado and m in checklist_manual]
-                if desmarcados and not df_checklist_hist.empty:
-                    df_checklist_restante = df_checklist_hist[
-                        ~((df_checklist_hist["Data"] == data_checklist_str) & (df_checklist_hist["Mapa"].astype(str).isin(desmarcados)))
-                    ]
-                    salvar_aba_historico("MapaChecklist", df_checklist_restante)
-                st.success("Checklist salvo.")
-                st.rerun()
-
-    st.divider()
     with st.expander("🧹 Limpar mapa 'fantasma' do histórico do CONC", expanded=False):
         st.caption(
-            "O app acumula todo mapa já visto no CONC.csv, pra Previsão de Contagem e o Fechamento "
-            "conseguirem consultar dias anteriores mesmo depois do arquivo de hoje substituir o de ontem. "
-            "Se um mapa veio de um teste/erro de digitação corrigido depois, ele fica 'preso' aqui achando "
-            "que ainda existe — o alerta de integridade (sidebar) avisa quando isso acontece. Remova aqui."
+            "O app acumula todo mapa já visto no CONC.csv, pra Previsão de Contagem "
+            "conseguir consultar dias anteriores mesmo depois do arquivo de hoje substituir o de ontem. "
+            "Se um mapa veio de um teste/erro de digitação corrigido depois, remova aqui."
         )
         _hist_conc_bruto_limpeza = ler_aba_historico("MapaPAHistorico")
         if _hist_conc_bruto_limpeza.empty or "Mapa" not in _hist_conc_bruto_limpeza.columns:
@@ -1681,13 +1578,11 @@ with aba_conciliacao_sede:
     else:
         data_previsao_str = data_previsao.strftime("%d/%m/%Y")
         
-        # Filtra mapas do dia no CONC.csv
         sub_conc_data = df_mapa_pa[df_mapa_pa["Data"] == data_previsao_str].copy()
         
         if sub_conc_data.empty:
             st.warning(f"Nenhum mapa cadastrado em {data_previsao_str} na planilha '{ARQUIVO_MAPA_PA.name}'.")
         else:
-            # Mapeamento de cada mapa resolvido para seu Ponto de Apoio (Sede, Tianguá, Granja...)
             pa_por_mapa_data = {}
             for _, r in sub_conc_data.iterrows():
                 m_res = resolver_mapa(str(r["Mapa"]))
@@ -1710,13 +1605,10 @@ with aba_conciliacao_sede:
             if df_previsao.empty:
                 st.info("Nenhum dos mapas dessa data foi encontrado no relatório ainda.")
             else:
-                # Vincula a PA em cada registro de saída
                 df_previsao["PA"] = df_previsao["Mapa"].apply(lambda m: pa_por_mapa_data.get(m, "Sede"))
                 
-                # Lista de PAs presentes no dia (ex: Sede, Tianguá, Granja)
                 pas_no_dia = sorted(df_previsao["PA"].unique().tolist(), key=lambda p: (0 if p == "Sede" else 1, p))
 
-                # Monta as sub-abas: Geral (Total) + Cada PA individualmente
                 titulos_abas = ["🌐 Total Geral"] + [f"🏢 {p}" if p == "Sede" else f"🚛 {p}" for p in pas_no_dia]
                 sub_abas_previsao = st.tabs(titulos_abas)
 
