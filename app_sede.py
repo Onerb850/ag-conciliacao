@@ -1232,6 +1232,63 @@ with aba_vazio_pa:
                 st.rerun()
 
     st.divider()
+    with st.expander("☑️ Checklist de mapas lançados (Histórico Antigo)", expanded=False):
+        st.caption("Ferramenta mantida apenas para verificação de datas antigas.")
+        col_chk1, col_chk2 = st.columns(2)
+        data_checklist = col_chk1.date_input("Data", value=date.today(), key="data_checklist")
+        pa_checklist = col_chk2.selectbox("PA", ["Tianguá", "Granja", "Sede"], key="pa_checklist")
+
+        data_checklist_str = data_checklist.strftime("%d/%m/%Y")
+        mapas_checklist = []
+        if df_mapa_pa is not None and not df_mapa_pa.empty:
+            pa_norm_alvo_chk = _PA_NORMALIZADO.get(pa_checklist.strip().upper(), pa_checklist).upper()
+            pa_bate_chk = df_mapa_pa["PA"].apply(lambda v: _PA_NORMALIZADO.get(str(v).strip().upper(), v).upper() == pa_norm_alvo_chk)
+            mapas_checklist = sorted(
+                df_mapa_pa[(df_mapa_pa["Data"] == data_checklist_str) & pa_bate_chk]["Mapa"].dropna().unique().tolist(),
+                key=lambda m: int(m) if str(m).isdigit() else 0,
+            )
+
+        if not mapas_checklist:
+            st.info(f"Nenhum mapa cadastrado pra {pa_checklist} em {data_checklist_str} no CONC.csv.")
+        else:
+            MAPAS_JA_LANCADOS = MAPAS_INDIVIDUAIS | MAPAS_EM_LOTE
+            df_checklist_hist = ler_aba_historico("MapaChecklist")
+            checklist_manual = set()
+            if not df_checklist_hist.empty and "Data" in df_checklist_hist.columns:
+                checklist_manual = set(df_checklist_hist[df_checklist_hist["Data"] == data_checklist_str]["Mapa"].astype(str))
+
+            estados_novos = {}
+            cols_chk = st.columns(4)
+            for i, mapa_c in enumerate(mapas_checklist):
+                marcado_auto = mapa_c in MAPAS_JA_LANCADOS
+                valor_inicial = marcado_auto or (mapa_c in checklist_manual)
+                col = cols_chk[i % 4]
+                estados_novos[mapa_c] = col.checkbox(
+                    mapa_c, value=valor_inicial, key=f"chk_mapa_{data_checklist_str}_{pa_checklist}_{mapa_c}",
+                    disabled=marcado_auto,
+                    help="Já tem retorno lançado" if marcado_auto else "Marcação manual — só pra acompanhamento",
+                )
+
+            qtd_marcados = sum(estados_novos.values())
+            st.caption(f"{qtd_marcados} de {len(mapas_checklist)} mapa(s) marcados.")
+
+            if st.button("💾 Salvar checklist", key="salvar_checklist"):
+                linhas_checklist = [
+                    {"Data": data_checklist_str, "PA": pa_checklist, "Mapa": m, "Checado": 1}
+                    for m, marcado in estados_novos.items() if marcado and m not in MAPAS_JA_LANCADOS
+                ]
+                if linhas_checklist:
+                    acumular_historico(pd.DataFrame(linhas_checklist), "MapaChecklist", ["Data", "Mapa"])
+                desmarcados = [m for m, marcado in estados_novos.items() if not marcado and m in checklist_manual]
+                if desmarcados and not df_checklist_hist.empty:
+                    df_checklist_restante = df_checklist_hist[
+                        ~((df_checklist_hist["Data"] == data_checklist_str) & (df_checklist_hist["Mapa"].astype(str).isin(desmarcados)))
+                    ]
+                    salvar_aba_historico("MapaChecklist", df_checklist_restante)
+                st.success("Checklist salvo.")
+                st.rerun()
+
+    st.divider()
     with st.expander("🧹 Limpar mapa 'fantasma' do histórico do CONC", expanded=False):
         st.caption(
             "O app acumula todo mapa já visto no CONC.csv, pra Previsão de Contagem "
@@ -1283,8 +1340,8 @@ with aba_vazio_pa:
 # ABA DE CONCILIAÇÃO POR MAPA PA (VENDA x RETORNO CONFERENTE)
 # =========================================================================
 with aba_conciliacao:
-    st.header("🔍 Análise Detalhada de Mapas (PA)")
-    st.caption("Cruza o que saiu (02.05.01) com o que o conferente digitou. Selecione um mapa para investigar.")
+    st.header("⚖️ Conciliação de Mapas PA (Saída 02.05.01 vs. Retorno conferente)")
+    st.caption("Mapas Tianguá/Granja do CONC.csv — cruzamento de saída e devolução física.")
 
     df_concil = pd.DataFrame()  # fallback
     if df_020501_historico is None or df_020501_historico.empty or not MAPAS_PA_CONC:
@@ -1430,8 +1487,8 @@ with aba_conciliacao:
         df_concil["Status"] = df_concil.apply(status_conciliacao, axis=1)
 
         # 5. FILTROS E EXIBIÇÃO
-        st.markdown("### 1. Filtros de Pesquisa")
-        col_f1, col_f2, col_f3 = st.columns(3)
+        st.markdown("### Filtros de Pesquisa")
+        col_f1, col_f2, col_f3, col_f4 = st.columns([1, 1, 1, 1.5])
         
         datas_disponiveis_pa = sorted(
             {d for d in df_concil["Data"].unique() if str(d).strip() not in ("-", "nan", "")},
@@ -1448,6 +1505,8 @@ with aba_conciliacao:
         pa_filter = col_f2.selectbox("🏢 Ponto de Apoio:", lista_pas)
         
         status_filter = col_f3.selectbox("🚦 Status:", ["Todos", "❌ Faltou AG", "⚠️ Sobrou AG", "✅ Bateu"])
+        
+        mapa_search = col_f4.text_input("🔍 Mapa Específico (opcional):", "")
 
         df_display = df_concil.copy()
 
@@ -1457,104 +1516,25 @@ with aba_conciliacao:
             df_display = df_display[df_display["PA"] == pa_filter]
         if status_filter != "Todos":
             df_display = df_display[df_display["Status"] == status_filter]
+        if mapa_search.strip() != "":
+            df_display = df_display[df_display["Mapa"].str.contains(limpa_mapa(mapa_search))]
 
         colunas_exibir_pa = ["Mapa", "Data", "PA", "Familia", "Saída", "Retorno", "Diferença", "Status"]
 
         st.divider()
-        st.markdown("### 2. Análise do Mapa (Raio-X)")
-        st.caption("Selecione um mapa na lista abaixo para investigar a origem exata da saída e do retorno.")
         
-        mapas_filtrados = sorted(df_display["Mapa"].unique().tolist())
-        mapa_search = st.selectbox(
-            "🔍 Escolha um mapa para investigar detalhadamente:", 
-            ["-- Ver Visão Geral (Todos os Mapas) --"] + mapas_filtrados
-        )
-
-        if mapa_search == "-- Ver Visão Geral (Todos os Mapas) --":
-            faltas = len(df_display[df_display["Status"] == "❌ Faltou AG"]["Mapa"].unique())
-            sobras = len(df_display[df_display["Status"] == "⚠️ Sobrou AG"]["Mapa"].unique())
-            bateu = len(df_display[df_display["Status"] == "✅ Bateu"]["Mapa"].unique())
-            
-            renderizar_cards_resumo([
-                ("Mapas c/ Faltas", faltas, "vermelho"),
-                ("Mapas c/ Sobras", sobras, "amarelo"),
-                ("Mapas Batidos", bateu, "verde"),
-            ])
-            
-            st.write("")
-            renderizar_tabela_limpa(df_display[colunas_exibir_pa].sort_values(by=["Mapa", "Familia"]), colunas_exibir_pa)
-            
-        else:
-            # RAIO X DO MAPA
-            df_mapa_alvo = df_display[df_display["Mapa"] == mapa_search].sort_values("Familia")
-            
-            st.markdown(f"#### 🔎 Investigando: `{mapa_search}`")
-            st.markdown("**⚖️ Resultado Consolidado (Agrupado por Família)**")
-            renderizar_tabela_limpa(df_mapa_alvo[colunas_exibir_pa], colunas_exibir_pa)
-            
-            st.write("")
-            col_saida, col_retorno = st.columns(2)
-            
-            if "Lote: " in mapa_search:
-                raw_str = mapa_search.replace("Lote: ", "").split(" (consolidados:")[0]
-                mapas_raw = [m.strip() for m in raw_str.split(",")]
-            elif "(→" in mapa_search:
-                raw_str = mapa_search.split(" (→")[0]
-                mapas_raw = [m.strip() for m in raw_str.split("+")]
-            else:
-                mapas_raw = [mapa_search.strip()]
-                
-            mapas_resolvidos = resolver_mapas(mapas_raw)
-            
-            with col_saida:
-                st.markdown("##### 📤 Origem da Saída (02.05.01)")
-                df_saida_mapa = df_020501_historico[df_020501_historico["Mapa"].isin(mapas_resolvidos)].copy() if (df_020501_historico is not None and not df_020501_historico.empty) else pd.DataFrame()
-                
-                if not df_saida_mapa.empty:
-                    if "Descricao" in df_saida_mapa.columns:
-                        df_saida_mapa["Item"] = df_saida_mapa.apply(lambda r: com_apelido(r["Material"], r["Descricao"]), axis=1)
-                    else:
-                        df_saida_mapa["Item"] = df_saida_mapa["Material"]
-                        
-                    df_saida_mapa = df_saida_mapa[["Mapa", "Item", "Qtde_Saida"]].rename(columns={"Qtde_Saida": "Qtd (un)"})
-                    df_saida_mapa["Qtd (un)"] = df_saida_mapa["Qtd (un)"].astype(int)
-                    df_saida_mapa = df_saida_mapa.sort_values(["Mapa", "Qtd (un)"], ascending=[True, False])
-                    st.dataframe(df_saida_mapa, width='stretch', hide_index=True)
-                else:
-                    st.caption("Nenhum item registrado na saída no 02.05.01.")
-
-            with col_retorno:
-                st.markdown("##### 🚚 Origem do Retorno (Físico)")
-                encontrou_retorno = False
-                
-                def is_in_lote(mapas_str):
-                    lote_list = mapas_da_lote(mapas_str)
-                    return any(m in lote_list for m in mapas_raw)
-                    
-                if not _hist_lote_bruto.empty and "Mapas" in _hist_lote_bruto.columns:
-                    lotes_encontrados = _hist_lote_bruto[_hist_lote_bruto["Mapas"].apply(is_in_lote)]
-                    if not lotes_encontrados.empty:
-                        encontrou_retorno = True
-                        st.info(f"📦 Lançamento em Lote: `{lotes_encontrados.iloc[0]['Mapas'].replace(';', ', ')}`")
-                        df_ret_exib = lotes_encontrados[["Familia", "Caixas", "Garrafas", "Garrafeiras", "Unidades"]].copy()
-                        for c in ["Caixas", "Garrafas", "Garrafeiras", "Unidades"]:
-                            df_ret_exib[c] = pd.to_numeric(df_ret_exib[c], errors='coerce').fillna(0).astype(int)
-                        df_ret_exib = df_ret_exib.groupby("Familia").sum().reset_index()
-                        st.dataframe(df_ret_exib, width='stretch', hide_index=True)
-                        
-                if not encontrou_retorno:
-                    if not _hist_vazio_pa_bruto.empty and "Mapa" in _hist_vazio_pa_bruto.columns:
-                        indiv_encontrados = _hist_vazio_pa_bruto[_hist_vazio_pa_bruto["Mapa"].astype(str).isin([str(m) for m in mapas_raw])]
-                        if not indiv_encontrados.empty:
-                            encontrou_retorno = True
-                            st.info("📝 Lançamento Individual")
-                            df_ret_exib = indiv_encontrados[["Mapa", "Familia", "Caixas", "Garrafas", "Garrafeiras", "Unidades"]].copy()
-                            for c in ["Caixas", "Garrafas", "Garrafeiras", "Unidades"]:
-                                df_ret_exib[c] = pd.to_numeric(df_ret_exib[c], errors='coerce').fillna(0).astype(int)
-                            st.dataframe(df_ret_exib, width='stretch', hide_index=True)
-
-                if not encontrou_retorno:
-                    st.warning("Nenhum retorno físico foi digitado para este mapa ainda.")
+        faltas = len(df_display[df_display["Status"] == "❌ Faltou AG"]["Mapa"].unique())
+        sobras = len(df_display[df_display["Status"] == "⚠️ Sobrou AG"]["Mapa"].unique())
+        bateu = len(df_display[df_display["Status"] == "✅ Bateu"]["Mapa"].unique())
+        
+        renderizar_cards_resumo([
+            ("Mapas c/ Faltas", faltas, "vermelho"),
+            ("Mapas c/ Sobras", sobras, "amarelo"),
+            ("Mapas Batidos", bateu, "verde"),
+        ])
+        
+        st.write("")
+        renderizar_tabela_limpa(df_display[colunas_exibir_pa].sort_values(by=["Mapa", "Familia"]), colunas_exibir_pa)
 
 
 # =========================================================================
@@ -1578,11 +1558,13 @@ with aba_conciliacao_sede:
     else:
         data_previsao_str = data_previsao.strftime("%d/%m/%Y")
         
+        # Filtra mapas do dia no CONC.csv
         sub_conc_data = df_mapa_pa[df_mapa_pa["Data"] == data_previsao_str].copy()
         
         if sub_conc_data.empty:
             st.warning(f"Nenhum mapa cadastrado em {data_previsao_str} na planilha '{ARQUIVO_MAPA_PA.name}'.")
         else:
+            # Mapeamento de cada mapa resolvido para seu Ponto de Apoio (Sede, Tianguá, Granja...)
             pa_por_mapa_data = {}
             for _, r in sub_conc_data.iterrows():
                 m_res = resolver_mapa(str(r["Mapa"]))
@@ -1605,10 +1587,13 @@ with aba_conciliacao_sede:
             if df_previsao.empty:
                 st.info("Nenhum dos mapas dessa data foi encontrado no relatório ainda.")
             else:
+                # Vincula a PA em cada registro de saída
                 df_previsao["PA"] = df_previsao["Mapa"].apply(lambda m: pa_por_mapa_data.get(m, "Sede"))
                 
+                # Lista de PAs presentes no dia (ex: Sede, Tianguá, Granja)
                 pas_no_dia = sorted(df_previsao["PA"].unique().tolist(), key=lambda p: (0 if p == "Sede" else 1, p))
 
+                # Monta as sub-abas: Geral (Total) + Cada PA individualmente
                 titulos_abas = ["🌐 Total Geral"] + [f"🏢 {p}" if p == "Sede" else f"🚛 {p}" for p in pas_no_dia]
                 sub_abas_previsao = st.tabs(titulos_abas)
 
