@@ -1,3 +1,4 @@
+import time
 import streamlit as st
 import pandas as pd
 from datetime import date, timedelta
@@ -1022,8 +1023,6 @@ with aba_vazio_pa:
             c_btn.write("")
             c_btn.write("")
             if c_btn.button("🗑️ Apagar este Mapa", type="primary", use_container_width=True):
-                import time
-                
                 # BLINDAGEM MÁXIMA DE EXCLUSÃO:
                 d_alvo = str(del_data).strip()
                 m_alvo = str(del_mapa).strip()
@@ -1110,8 +1109,6 @@ with aba_vazio_pa:
             cdl3.write("")
             cdl3.write("")
             if cdl3.button("🗑️ Apagar", type="primary", use_container_width=True, key="btn_del_lote"):
-                import time # Importado aqui para garantir que funcione
-                
                 # BLINDAGEM MÁXIMA: Garante que texto é texto, sem falhas do Pandas
                 d_alvo = str(del_data_lote).strip()
                 m_alvo = str(del_lote_chave).strip()
@@ -1392,7 +1389,7 @@ with aba_conciliacao:
         df_concil["Retorno"] = df_concil.apply(lambda r: formata_cx_un(r["Caixas_Retorno"], r["Soltas_Retorno"], r["Familia"]), axis=1)
 
         def formata_dif(dif, fam):
-            item = "gf" if fam in FAMILIAS_GARRAFA: "un"
+            item = "gf" if fam in FAMILIAS_GARRAFA else "un"
             if dif == 0: return "0"
             if dif > 0: return f"+{int(dif)} {item}"
             return f"{int(dif)} {item}"
