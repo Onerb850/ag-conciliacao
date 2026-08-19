@@ -1125,6 +1125,7 @@ with aba_vazio_pa:
                     pa_atual = pa_padrao
                     st.caption(f"Novo: Mapa {edit_mapa} · {pa_atual} · {edit_data} · {edit_familia}")
 
+                st.caption("💡 **Atenção:** Para bebidas (300ml, 600ml, 1L), altere apenas as **Caixas**. As garrafas serão recalculadas sozinhas ao salvar. Para outros itens, altere as **Unidades**.")
                 ce1, ce2, ce3, ce4 = st.columns(4)
                 novo_caixas = ce1.number_input("Caixas", min_value=0, step=1, value=int(linha_atual.get("Caixas", 0)) if isinstance(linha_atual, pd.Series) else 0, key="edit_caixas")
                 novo_garrafas = ce2.number_input("Garrafas", min_value=0, step=1, value=int(linha_atual.get("Garrafas", 0)) if isinstance(linha_atual, pd.Series) else 0, key="edit_garrafas")
@@ -1132,9 +1133,21 @@ with aba_vazio_pa:
                 novo_unidades = ce4.number_input("Unidades", min_value=0, step=1, value=int(linha_atual.get("Unidades", 0)) if isinstance(linha_atual, pd.Series) else 0, key="edit_unidades")
 
                 if st.button("💾 Salvar edição", type="primary", key="salvar_edicao_pa"):
+                    if edit_familia in REGRAS_VAZIO:
+                        r = REGRAS_VAZIO[edit_familia]
+                        cx_salvar = novo_caixas
+                        gf_salvar = novo_caixas * r["garrafas_por_cx"]
+                        gfr_salvar = 0 if edit_familia == "Verde 600" else (novo_caixas * r["garrafeiras_por_cx"])
+                        un_salvar = 0
+                    else:
+                        cx_salvar = 0
+                        gf_salvar = 0
+                        gfr_salvar = 0
+                        un_salvar = novo_unidades
+
                     nova_linha = pd.DataFrame([{
                         "Data": edit_data, "PA": pa_atual, "Mapa": edit_mapa, "Familia": edit_familia,
-                        "Caixas": novo_caixas, "Garrafas": novo_garrafas, "Garrafeiras": novo_garrafeiras, "Unidades": novo_unidades,
+                        "Caixas": cx_salvar, "Garrafas": gf_salvar, "Garrafeiras": gfr_salvar, "Unidades": un_salvar,
                     }])
                     acumular_historico(nova_linha, ABA_VAZIO_PA_ATIVA, ["Data", "PA", "Mapa", "Familia"])
                     st.success(f"✅ Item '{edit_familia}' do mapa {edit_mapa} atualizado!")
@@ -1210,6 +1223,7 @@ with aba_vazio_pa:
                     pa_atual_lote = pa_padrao_lote
                     st.caption(f"Novo: Lote {', '.join(mapas_da_lote(edit_lote_chave))} · {pa_atual_lote} · {edit_data_lote} · {edit_familia_lote}")
 
+                st.caption("💡 **Atenção:** Para bebidas (300ml, 600ml, 1L), altere apenas as **Caixas**. As garrafas serão recalculadas sozinhas ao salvar. Para outros itens, altere as **Unidades**.")
                 cel3, cel4, cel5, cel6 = st.columns(4)
                 novo_caixas_lote = cel3.number_input("Caixas", min_value=0, step=1, value=int(linha_atual_lote.get("Caixas", 0)) if isinstance(linha_atual_lote, pd.Series) else 0, key="edit_caixas_lote")
                 novo_garrafas_lote = cel4.number_input("Garrafas", min_value=0, step=1, value=int(linha_atual_lote.get("Garrafas", 0)) if isinstance(linha_atual_lote, pd.Series) else 0, key="edit_garrafas_lote")
@@ -1217,9 +1231,21 @@ with aba_vazio_pa:
                 novo_unidades_lote = cel6.number_input("Unidades", min_value=0, step=1, value=int(linha_atual_lote.get("Unidades", 0)) if isinstance(linha_atual_lote, pd.Series) else 0, key="edit_unidades_lote")
 
                 if st.button("💾 Salvar edição do lote", type="primary", key="salvar_edicao_lote"):
+                    if edit_familia_lote in REGRAS_VAZIO:
+                        r = REGRAS_VAZIO[edit_familia_lote]
+                        cx_salvar = novo_caixas_lote
+                        gf_salvar = novo_caixas_lote * r["garrafas_por_cx"]
+                        gfr_salvar = 0 if edit_familia_lote == "Verde 600" else (novo_caixas_lote * r["garrafeiras_por_cx"])
+                        un_salvar = 0
+                    else:
+                        cx_salvar = 0
+                        gf_salvar = 0
+                        gfr_salvar = 0
+                        un_salvar = novo_unidades_lote
+
                     nova_linha_lote = pd.DataFrame([{
                         "Data": edit_data_lote, "PA": pa_atual_lote, "Mapas": edit_lote_chave, "Familia": edit_familia_lote,
-                        "Caixas": novo_caixas_lote, "Garrafas": novo_garrafas_lote, "Garrafeiras": novo_garrafeiras_lote, "Unidades": novo_unidades_lote,
+                        "Caixas": cx_salvar, "Garrafas": gf_salvar, "Garrafeiras": gfr_salvar, "Unidades": un_salvar,
                     }])
                     acumular_historico(nova_linha_lote, ABA_LOTE_ATIVA, ["Data", "PA", "Mapas", "Familia"])
                     st.success(f"✅ Item '{edit_familia_lote}' do lote atualizado!")
