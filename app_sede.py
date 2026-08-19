@@ -976,9 +976,97 @@ with aba_vazio_pa:
                     st.warning("Nenhuma quantidade foi informada para salvar.")
 
     # =====================================================================
-    # A PARTIR DAQUI: só telas de conferência (tabelas, edição, exclusão) —
-    # os dois formulários de lançamento (individual e lote) ficam sempre no
-    # topo da aba, acima desta linha.
+    # 📋 NOVO: RESUMO ACUMULADO DO DIA (LOGO ABAIXO DOS FORMULÁRIOS)
+    # =====================================================================
+    st.divider()
+    st.markdown("### 📋 Resumo Acumulado do Dia (Saída vs Retorno)")
+    st.caption("Acompanhe o status de todas as conferências que você já salvou para a data abaixo.")
+    
+    col_res1, col_res2 = st.columns([1, 3])
+    data_resumo = col_res1.date_input("Data do Resumo", value=data_manual, key="data_resumo_diario")
+    data_resumo_str = data_resumo.strftime("%d/%m/%Y")
+
+    linhas_resumo_diario = []
+
+    # 1. Pega do histórico de LOTES (que agora também recebe os lançamentos manuais)
+    hist_lote_resumo = ler_aba_historico(ABA_LOTE_ATIVA)
+    if not hist_lote_resumo.empty and "Data" in hist_lote_resumo.columns:
+        hist_lote_dia = hist_lote_resumo[hist_lote_resumo["Data"] == data_resumo_str]
+        for (pa_r, mapas_r), group in hist_lote_dia.groupby(["PA", "Mapas"]):
+            mapas_limpos = mapas_da_lote(mapas_r)
+            mapas_resolvidos = resolver_mapas(mapas_limpos)
+            saida_esperada = calcular_saida_familias(mapas_resolvidos)
+            
+            for familia in FAMILIAS_CONFERENCIA:
+                saida_fam = saida_esperada.get(familia, 0)
+                linha_fam = group[group["Familia"] == familia]
+                if not linha_fam.empty:
+                    retorno_fam = int(pd.to_numeric(linha_fam["Garrafas"]).sum()) + int(pd.to_numeric(linha_fam["Unidades"]).sum())
+                else:
+                    retorno_fam = 0
+                
+                if saida_fam == 0 and retorno_fam == 0:
+                    continue
+                    
+                dif = retorno_fam - saida_fam
+                status_txt = "✅ Bateu" if dif == 0 else ("❌ Faltou" if dif < 0 else "⚠️ Sobrou")
+                
+                linhas_resumo_diario.append({
+                    "PA": pa_r,
+                    "Mapas/Lote": str(mapas_r).replace(";", ", "),
+                    "Item": rotulo_conferencia(familia),
+                    "Saída": formata_un_em_cx(saida_fam, familia),
+                    "Retorno": formata_un_em_cx(retorno_fam, familia),
+                    "Diferença": formata_dif_em_cx(dif, familia),
+                    "Status": status_txt,
+                })
+
+    # 2. Pega do histórico INDIVIDUAL (legado/edições feitas na aba de exclusão)
+    hist_indiv_resumo = ler_aba_historico(ABA_VAZIO_PA_ATIVA)
+    if not hist_indiv_resumo.empty and "Data" in hist_indiv_resumo.columns:
+        hist_indiv_dia = hist_indiv_resumo[hist_indiv_resumo["Data"] == data_resumo_str]
+        for (pa_r, mapa_r), group in hist_indiv_dia.groupby(["PA", "Mapa"]):
+            mapas_limpos = [limpa_mapa(mapa_r)]
+            mapas_resolvidos = resolver_mapas(mapas_limpos)
+            saida_esperada = calcular_saida_familias(mapas_resolvidos)
+            
+            for familia in FAMILIAS_CONFERENCIA:
+                saida_fam = saida_esperada.get(familia, 0)
+                linha_fam = group[group["Familia"] == familia]
+                if not linha_fam.empty:
+                    retorno_fam = int(pd.to_numeric(linha_fam["Garrafas"]).sum()) + int(pd.to_numeric(linha_fam["Unidades"]).sum())
+                else:
+                    retorno_fam = 0
+                
+                if saida_fam == 0 and retorno_fam == 0:
+                    continue
+                    
+                dif = retorno_fam - saida_fam
+                status_txt = "✅ Bateu" if dif == 0 else ("❌ Faltou" if dif < 0 else "⚠️ Sobrou")
+                
+                # Evita duplicar na tela se por acaso estiver salvo em ambos os formatos
+                ja_existe = any(str(x["Mapas/Lote"]) == str(mapa_r) and x["Item"] == rotulo_conferencia(familia) for x in linhas_resumo_diario)
+                if not ja_existe:
+                    linhas_resumo_diario.append({
+                        "PA": pa_r,
+                        "Mapas/Lote": str(mapa_r),
+                        "Item": rotulo_conferencia(familia),
+                        "Saída": formata_un_em_cx(saida_fam, familia),
+                        "Retorno": formata_un_em_cx(retorno_fam, familia),
+                        "Diferença": formata_dif_em_cx(dif, familia),
+                        "Status": status_txt,
+                    })
+
+    if linhas_resumo_diario:
+        df_resumo = pd.DataFrame(linhas_resumo_diario)
+        # Organiza para ficar bonito
+        df_resumo = df_resumo.sort_values(by=["PA", "Mapas/Lote", "Item"])
+        renderizar_tabela_limpa(df_resumo, ["PA", "Mapas/Lote", "Item", "Saída", "Retorno", "Diferença", "Status"])
+    else:
+        st.info(f"Nenhuma conferência (Saída ou Retorno) encontrada para a data {data_resumo_str}.")
+
+    # =====================================================================
+    # A PARTIR DAQUI: só telas de conferência (tabelas, edição, exclusão)
     # =====================================================================
 
     df_vazio_pa = ler_aba_historico(ABA_VAZIO_PA_ATIVA)
