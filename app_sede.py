@@ -189,6 +189,49 @@ def renderizar_farol_previsao(dados_familia: dict, dados_outros: dict) -> None:
             col.markdown(html2, unsafe_allow_html=True)
 
 
+def extrair_dados_farol(df_subset: pd.DataFrame, lookup_map: dict) -> tuple[dict, dict]:
+    """Processa um subconjunto de dados de saída e devolve os dicionários
+    de garrafas (caixas+soltas) e outros itens (unidades) para o farol."""
+    if df_subset.empty:
+        return {}, {}
+
+    previsao_agg = df_subset.groupby("Material")["Qtde_Saida"].sum().reset_index()
+    previsao_agg = previsao_agg.rename(columns={"Qtde_Saida": "P Vazia"})
+    previsao_agg = previsao_agg[previsao_agg["P Vazia"] > 0]
+
+    if previsao_agg.empty:
+        return {}, {}
+
+    if "Descricao" in df_subset.columns:
+        desc_previsao = df_subset.drop_duplicates(subset=["Material"])[["Material", "Descricao"]].rename(columns={"Descricao": "Desc_Previsao"})
+        previsao_agg = previsao_agg.merge(desc_previsao, on="Material", how="left")
+        previsao_agg["AG"] = [
+            com_apelido(cod, str(desc)) for cod, desc in zip(previsao_agg["Material"], previsao_agg["Desc_Previsao"].fillna(""))
+        ]
+    else:
+        previsao_agg["AG"] = previsao_agg["Material"]
+
+    fam_tipo_previsao = previsao_agg["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_map))
+    previsao_agg["Familia"] = fam_tipo_previsao.apply(lambda ft: ft[0])
+    previsao_agg["Tipo"] = fam_tipo_previsao.apply(lambda ft: ft[1])
+    previsao_agg["P Vazia"] = previsao_agg["P Vazia"].round(0).astype(int)
+
+    dados_familia_farol: dict[str, dict[str, int]] = {}
+    dados_outros_farol: dict[str, int] = {}
+
+    for _, r in previsao_agg.iterrows():
+        fam, tipo, qtd, ag_label = r["Familia"], r["Tipo"], int(r["P Vazia"]), r["AG"]
+        if tipo == "Garrafa" and fam in REGRAS_VAZIO:
+            fator = int(fator_conversao_caixas(fam))
+            acc = dados_familia_farol.setdefault(fam, {"caixas": 0, "soltas": 0})
+            acc["caixas"] += qtd // fator
+            acc["soltas"] += qtd % fator
+        else:
+            dados_outros_farol[ag_label] = dados_outros_farol.get(ag_label, 0) + qtd
+
+    return dados_familia_farol, dados_outros_farol
+
+
 def _chave_cor_status(status: str) -> str:
     """Resolve a chave de CORES_RESUMO a partir do emoji presente no texto de status —
     mesma lógica de cor_linha_status(), mas devolvendo a chave em vez do CSS pronto."""
@@ -978,9 +1021,6 @@ with aba_vazio_pa:
             if df_mapa_editar.empty:
                 st.info("Nenhum item encontrado pra esse mapa/data.")
             else:
-                # Todas as famílias possíveis — não só as que já têm registro pra esse mapa,
-                # assim dá pra ADICIONAR um item que nunca foi digitado (ex: Chapatex),
-                # não só editar o que já existe.
                 TODAS_FAMILIAS = list(REGRAS_VAZIO.keys()) + ["Chapatex", "Pallet PBR1", "Pallet PBR2", "Barril 30L", "Barril 50L"]
                 familias_ja_digitadas = set(df_mapa_editar["Familia"].unique())
                 familias_disponiveis = sorted(TODAS_FAMILIAS, key=lambda f: (f not in familias_ja_digitadas, f))
@@ -1023,7 +1063,6 @@ with aba_vazio_pa:
             c_btn.write("")
             c_btn.write("")
             if c_btn.button("🗑️ Apagar este Mapa", type="primary", use_container_width=True):
-                # BLINDAGEM MÁXIMA DE EXCLUSÃO:
                 d_alvo = str(del_data).strip()
                 m_alvo = str(del_mapa).strip()
                 
@@ -1109,11 +1148,9 @@ with aba_vazio_pa:
             cdl3.write("")
             cdl3.write("")
             if cdl3.button("🗑️ Apagar", type="primary", use_container_width=True, key="btn_del_lote"):
-                # BLINDAGEM MÁXIMA: Garante que texto é texto, sem falhas do Pandas
                 d_alvo = str(del_data_lote).strip()
                 m_alvo = str(del_lote_chave).strip()
                 
-                # Procura linha por linha o que deve ser apagado
                 mascara_excluir = df_vazio_lote.apply(
                     lambda r: str(r["Data"]).strip() == d_alvo and str(r["Mapas"]).strip() == m_alvo, 
                     axis=1
@@ -1122,8 +1159,6 @@ with aba_vazio_pa:
                 df_restante_lote = df_vazio_lote[~mascara_excluir]
                 salvar_aba_historico(ABA_LOTE_ATIVA, df_restante_lote)
                 
-                # Dá tempo (1 segundo) pro HD/Google Drive confirmar a gravação 
-                # antes de ler tudo de novo
                 time.sleep(1) 
                 st.rerun()
 
@@ -1247,12 +1282,6 @@ with aba_conciliacao:
         st.info("⚠️ Aguardando dados. É necessário ter o relatório 02.05.01 e o CONC.csv (com mapas Tianguá/Granja) carregados.")
     else:
         # 1. VENDA (SAÍDA) — agora vem do 02.05.01 (código 554), não mais do 03.07.13.
-        # Classificada pelo Código do Material via De Material.xlsx. Usa
-        # df_020501_historico (acumulado, sem filtro de período — só o número do mapa
-        # importa) e MAPAS_PA_CONC (o CONC.csv é quem dita quais mapas entram aqui,
-        # independente de já terem sido conferidos ou não).
-        # Só entram garrafa/barril soltos (não garrafeira), igual ao Retorno digitado
-        # manualmente, que também só conta Garrafas+Unidades (nunca Garrafeiras).
         familia_tipo_venda = df_020501_historico["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
         df_venda_ag = df_020501_historico.copy()
         df_venda_ag["Familia"] = familia_tipo_venda.apply(lambda ft: normaliza_600(ft[0]))
@@ -1261,22 +1290,15 @@ with aba_conciliacao:
 
         venda_agg_todos = df_venda_ag.groupby(["Mapa", "Familia"])["Qtde_Saida"].sum().reset_index()
         venda_agg_todos.rename(columns={"Qtde_Saida": "Qtd_Saida_Unidades"}, inplace=True)
-        # Mapas em lote são tratados à parte mais abaixo — tira eles daqui pra não
-        # duplicar (uma vez como linha individual, outra dentro da linha do lote).
         _mapas_em_lote_resolvidos = set(resolver_mapas(MAPAS_EM_LOTE))
         venda_agg = venda_agg_todos[venda_agg_todos["Mapa"].isin(MAPAS_PA_CONC - _mapas_em_lote_resolvidos)]
 
         # 2. RETORNO DO PA
         hist_vazio_pa = _hist_vazio_pa_bruto.copy()
         if "Mapa" not in hist_vazio_pa.columns:
-            # Aba ainda não existe no historico_ag.xlsx (arquivo novo/vazio) — garante
-            # as colunas mínimas pra não quebrar o resto do bloco.
             hist_vazio_pa = pd.DataFrame(columns=["Data", "PA", "Mapa", "Familia", "Caixas", "Garrafas", "Garrafeiras", "Unidades"])
         else:
             hist_vazio_pa["Mapa"] = hist_vazio_pa["Mapa"].apply(limpar_numero_robusto)
-            # Se o mapa foi consolidado (coluna MAPA CONSOLIDADO do CONC.csv), soma o
-            # retorno de todos os originais que caem no mesmo consolidado antes de comparar
-            # — senão cada um bateria errado sozinho contra a Saída combinada dos dois.
             hist_vazio_pa["Mapa"] = hist_vazio_pa["Mapa"].apply(resolver_mapa)
 
         if "Garrafas" not in hist_vazio_pa.columns: hist_vazio_pa["Garrafas"] = 0
@@ -1285,9 +1307,6 @@ with aba_conciliacao:
         hist_vazio_pa["Qtd_Retorno_Unidades"] = pd.to_numeric(hist_vazio_pa["Garrafas"], errors='coerce').fillna(0) + \
                                                 pd.to_numeric(hist_vazio_pa["Unidades"], errors='coerce').fillna(0)
 
-        # Alerta: um mapa não pode estar registrado individualmente E dentro de um lote
-        # ao mesmo tempo — a Saída dele é excluída daqui (fica só no lote), então o
-        # retorno individual apareceria inteiro como "Sobrou AG" sem explicação.
         _mapas_conflito = set(hist_vazio_pa["Mapa"].unique()) & _mapas_em_lote_resolvidos
         if _mapas_conflito:
             st.error(
@@ -1297,9 +1316,6 @@ with aba_conciliacao:
                 "Registros' / 'Apagar um lote', mais abaixo nesta aba)."
             )
 
-        # PA "dono" de cada mapa (já resolvido) — usado pra não deixar uma família
-        # faltante "sumir" sob um rótulo genérico quando o conferente não digitou
-        # retorno pra ela.
         mapa_pa_lookup = hist_vazio_pa.groupby("Mapa")["PA"].first().to_dict()
 
         colunas_agrupamento_vazio = ["Mapa", "PA", "Familia"]
@@ -1318,14 +1334,9 @@ with aba_conciliacao:
         if tem_data_vazio_pa:
             df_concil["Data"] = df_concil["Data"].replace(0, "-")
 
-        # Troca o número puro do Mapa pelo rótulo consolidado quando aplicável — só
-        # muda a exibição, o cálculo acima já foi feito com o número resolvido.
         df_concil["Mapa"] = df_concil["Mapa"].apply(rotulo_mapa)
 
         # ==================== LOTE (vários mapas conferidos juntos) ====================
-        # Pra cada lote+família digitado, soma a Saída de TODOS os mapas do lote (na
-        # venda_agg_todos, sem o filtro de individuais) e compara com o total único
-        # informado — gera 1 linha por lote+família, não 1 por mapa.
         if not _hist_lote_bruto.empty and "Mapas" in _hist_lote_bruto.columns:
             hist_lote = _hist_lote_bruto.copy()
             if "Garrafas" not in hist_lote.columns: hist_lote["Garrafas"] = 0
@@ -1370,8 +1381,6 @@ with aba_conciliacao:
 
         df_concil["Diferença_Unidades"] = df_concil["Qtd_Retorno_Unidades"] - df_concil["Qtd_Saida_Unidades"]
 
-        # Só garrafa de verdade converte pra caixa+garrafa solta — qualquer outra coisa
-        # (Pallet, Chapatex, Barril) é sempre unidade, sem "gf" nenhum.
         FAMILIAS_GARRAFA = ("300ml", "600ml", "Verde 600", "1L")
 
         # 4. CRIAÇÃO DOS TEXTOS FORMATADOS
@@ -1396,10 +1405,6 @@ with aba_conciliacao:
 
         df_concil["Diferença"] = df_concil.apply(lambda r: formata_dif(r["Diferença_Unidades"], r["Familia"]), axis=1)
 
-        # LÓGICA DE STATUS — 3 regras de negócio:
-        # 1. Saiu (Previsto) e o conferente não digitou (ou digitou menos)  -> Faltou AG
-        # 2. Não saiu e o conferente também não digitou                     -> nenhuma linha é gerada (ok)
-        # 3. Não saiu e o conferente digitou (ou digitou mais que saiu)     -> Sobrou AG
         def status_conciliacao(row):
             dif = row["Diferença_Unidades"]
             if dif == 0:
@@ -1447,10 +1452,6 @@ with aba_conciliacao:
         df_display = df_display[colunas_exibir_pa]
         df_display = df_display.sort_values(by=["Mapa", "Familia"])
 
-        # Como a conferência é feita em lote (não dá pra apontar falta por mapa
-        # individual), o detalhamento por PA/lote fica concentrado na aba "Fechamento"
-        # — aqui só mantemos os dados calculados (usados por ela) e uma tabela
-        # completa opcional, sem repetir o resumo por mapa que não reflete o fluxo real.
         st.info("📊 Veja o resumo de divergências (Tianguá, Granja e Sede) na aba **Fechamento**.")
 
         with st.expander("📄 Ver tabela completa (todos os itens, inclusive os que bateram)"):
@@ -1458,22 +1459,13 @@ with aba_conciliacao:
 
 
 # =========================================================================
-# ABA DE CONCILIAÇÃO POR MAPA SEDE (Previsto x Realizado — sem conferente físico)
+# ABA DE PREVISÃO DE CONTAGEM (TOTAL, SEDE E PAs)
 # =========================================================================
 with aba_conciliacao_sede:
-    st.header("🏢 Previsão Sede")
-    st.caption("Só previsão do que deveria voltar — sem comparação, sem conferente.")
-    df_concil_sede = pd.DataFrame()  # fallback — usado pela aba Fechamento mesmo sem dados aqui
+    st.header("📅 Previsão de Contagem do AG")
+    st.caption("Quanto deveria voltar vazio, baseado no que saiu (Geral, Sede e por PA).")
+    df_concil_sede = pd.DataFrame()  # fallback
 
-    # =========================================================================
-    # PREVISÃO DE CONTAGEM DO AG — quanto deveria estar de volta no armazém,
-    # baseado no que saiu pra rota num dia (normalmente volta vazio no dia
-    # seguinte). Considera TODOS os mapas do dia (Sede + Tianguá + Granja
-    # juntos) e usa o relatório INTEIRO, sem o filtro de período da sidebar —
-    # só a Data escolhida aqui importa.
-    # =========================================================================
-    st.markdown("### 📅 Previsão de Contagem do AG")
-    st.caption("Quanto deveria voltar vazio, baseado no que saiu.")
     data_previsao = st.date_input(
         "Data em que a rota saiu",
         value=date.today() - timedelta(days=1),
@@ -1486,17 +1478,24 @@ with aba_conciliacao_sede:
         st.info("⚠️ Aguardando dados do relatório 02.05.01.")
     else:
         data_previsao_str = data_previsao.strftime("%d/%m/%Y")
-        mapas_previsao_originais = sorted(
-            df_mapa_pa[df_mapa_pa["Data"] == data_previsao_str]["Mapa"].dropna().unique().tolist(),
-            key=lambda m: int(m) if str(m).isdigit() else 0,
-        )
-        # Resolvido: mapas consolidados (ex: 257682+257685→257693) contam uma vez só —
-        # a Saída deles só existe sob o número final no relatório.
-        mapas_previsao = resolver_mapas(mapas_previsao_originais)
-
-        if not mapas_previsao:
+        
+        # Filtra mapas do dia no CONC.csv
+        sub_conc_data = df_mapa_pa[df_mapa_pa["Data"] == data_previsao_str].copy()
+        
+        if sub_conc_data.empty:
             st.warning(f"Nenhum mapa cadastrado em {data_previsao_str} na planilha '{ARQUIVO_MAPA_PA.name}'.")
         else:
+            # Mapeamento de cada mapa resolvido para seu Ponto de Apoio (Sede, Tianguá, Granja...)
+            pa_por_mapa_data = {}
+            for _, r in sub_conc_data.iterrows():
+                m_res = resolver_mapa(str(r["Mapa"]))
+                pa_bruto = str(r.get("PA", "Sede")).strip().upper()
+                pa_norm = _PA_NORMALIZADO.get(pa_bruto, str(r.get("PA", "Sede")).strip())
+                pa_por_mapa_data[m_res] = pa_norm
+
+            mapas_previsao_originais = sorted(sub_conc_data["Mapa"].dropna().unique().tolist(), key=lambda m: int(m) if str(m).isdigit() else 0)
+            mapas_previsao = resolver_mapas(mapas_previsao_originais)
+
             df_previsao = df_020501_historico[df_020501_historico["Mapa"].isin(mapas_previsao)].copy()
             mapas_encontrados = set(df_previsao["Mapa"].unique())
             mapas_faltando = [m for m in mapas_previsao if m not in mapas_encontrados]
@@ -1504,51 +1503,45 @@ with aba_conciliacao_sede:
             if mapas_faltando:
                 st.warning(f"{len(mapas_faltando)} mapa(s) ainda não estão no relatório: {', '.join(mapas_faltando)}. Previsão incompleta.")
             else:
-                st.caption(f"{len(mapas_previsao)} mapa(s) encontrados.")
+                st.caption(f"{len(mapas_previsao)} mapa(s) encontrados no total.")
 
             if df_previsao.empty:
                 st.info("Nenhum dos mapas dessa data foi encontrado no relatório ainda.")
             else:
-                previsao_agg = df_previsao.groupby("Material")["Qtde_Saida"].sum().reset_index()
-                previsao_agg = previsao_agg.rename(columns={"Qtde_Saida": "P Vazia"})
-                previsao_agg = previsao_agg[previsao_agg["P Vazia"] > 0]
+                # Vincula a PA em cada registro de saída
+                df_previsao["PA"] = df_previsao["Mapa"].apply(lambda m: pa_por_mapa_data.get(m, "Sede"))
+                
+                # Lista de PAs presentes no dia (ex: Sede, Tianguá, Granja)
+                pas_no_dia = sorted(df_previsao["PA"].unique().tolist(), key=lambda p: (0 if p == "Sede" else 1, p))
 
-                if previsao_agg.empty:
-                    st.info(f"Não houve saída de Vazio em {data_previsao_str}.")
-                else:
-                    if "Descricao" in df_previsao.columns:
-                        desc_previsao = df_previsao.drop_duplicates(subset=["Material"])[["Material", "Descricao"]].rename(columns={"Descricao": "Desc_Previsao"})
-                        previsao_agg = previsao_agg.merge(desc_previsao, on="Material", how="left")
-                        previsao_agg["AG"] = [
-                            com_apelido(cod, str(desc)) for cod, desc in zip(previsao_agg["Material"], previsao_agg["Desc_Previsao"].fillna(""))
-                        ]
+                # Monta as sub-abas: Geral (Total) + Cada PA individualmente
+                titulos_abas = ["🌐 Total Geral"] + [f"🏢 {p}" if p == "Sede" else f"🚛 {p}" for p in pas_no_dia]
+                sub_abas_previsao = st.tabs(titulos_abas)
+
+                # 1. SUB-ABA: TOTAL GERAL
+                with sub_abas_previsao[0]:
+                    st.markdown(f"#### 🌐 Previsão Total Geral ({len(mapas_previsao)} mapas)")
+                    dados_fam_total, dados_outros_total = extrair_dados_farol(df_previsao, lookup_ag)
+                    if dados_fam_total or dados_outros_total:
+                        renderizar_farol_previsao(dados_fam_total, dados_outros_total)
                     else:
-                        previsao_agg["AG"] = previsao_agg["Material"]
+                        st.info("Não houve movimentação de vasilhame no total geral.")
 
-                    fam_tipo_previsao = previsao_agg["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
-                    previsao_agg["Familia"] = fam_tipo_previsao.apply(lambda ft: ft[0])
-                    previsao_agg["Tipo"] = fam_tipo_previsao.apply(lambda ft: ft[1])
-                    previsao_agg["P Vazia"] = previsao_agg["P Vazia"].round(0).astype(int)
-                    previsao_agg["Previsão de Retorno"] = previsao_agg.apply(
-                        lambda r: formata_qtd_fisica(r["P Vazia"], r["Tipo"], r["Familia"]), axis=1
-                    )
-
-                    # Monta os dados pro visual "farol": famílias de garrafa (300/600/
-                    # Verde/Litrão) viram caixas+soltas; tudo mais (garrafeira, pallet,
-                    # chapatex, barril) vira um card escuro só com a unidade.
-                    dados_familia_farol: dict[str, dict[str, int]] = {}
-                    dados_outros_farol: dict[str, int] = {}
-                    for _, r in previsao_agg.iterrows():
-                        fam, tipo, qtd, ag_label = r["Familia"], r["Tipo"], int(r["P Vazia"]), r["AG"]
-                        if tipo == "Garrafa" and fam in REGRAS_VAZIO:
-                            fator = int(fator_conversao_caixas(fam))
-                            acc = dados_familia_farol.setdefault(fam, {"caixas": 0, "soltas": 0})
-                            acc["caixas"] += qtd // fator
-                            acc["soltas"] += qtd % fator
+                # 2. SUB-ABAS: POR PA / SEDE
+                for idx_pa, nome_pa in enumerate(pas_no_dia):
+                    with sub_abas_previsao[idx_pa + 1]:
+                        df_pa_especifico = df_previsao[df_previsao["PA"] == nome_pa]
+                        mapas_pa_especifico = sorted(df_pa_especifico["Mapa"].unique(), key=lambda m: int(m) if str(m).isdigit() else 0)
+                        
+                        icone_pa = "🏢" if nome_pa == "Sede" else "🚛"
+                        st.markdown(f"#### {icone_pa} Previsão — {nome_pa} ({len(mapas_pa_especifico)} mapas)")
+                        st.caption(f"Mapas: {', '.join(mapas_pa_especifico)}")
+                        
+                        dados_fam_pa, dados_outros_pa = extrair_dados_farol(df_pa_especifico, lookup_ag)
+                        if dados_fam_pa or dados_outros_pa:
+                            renderizar_farol_previsao(dados_fam_pa, dados_outros_pa)
                         else:
-                            dados_outros_farol[ag_label] = dados_outros_farol.get(ag_label, 0) + qtd
-
-                    renderizar_farol_previsao(dados_familia_farol, dados_outros_farol)
+                            st.info(f"Não houve movimentação de vasilhame em {nome_pa} nesta data.")
 
 
 # =========================================================================
@@ -1567,10 +1560,6 @@ with aba_fechamento:
     )
     data_fechamento_str = data_fechamento.strftime("%d/%m/%Y")
 
-    # --- Unifica PA (por Família) e Sede (por Item/AG) numa tabela só de diferenças ---
-    # PA_Especifica: Tianguá/Granja/Sede (não mais um genérico "PA"/"Sede") — pra saber
-    # ONDE está ocorrendo a falta/sobra. FamiliaConv: usada só pra converter unidades em
-    # caixas (fator certo por família: 23/24/24/12).
     partes_fechamento = []
     if not df_concil.empty and "Diferença_Unidades" in df_concil.columns:
         colunas_pa = ["Mapa", "Familia", "Diferença_Unidades"]
@@ -1584,9 +1573,6 @@ with aba_fechamento:
             pa_unif["PA"] = "Tianguá/Granja"
         if "Data" not in pa_unif.columns:
             pa_unif["Data"] = "-"
-        # Mapa sem retorno lançado não tem Data própria (vem "-" do merge) — nesse
-        # caso, usa a Data do CONC.csv pra esse mapa, senão ele nunca aparece no
-        # Fechamento filtrado por data (mesmo tendo Saída e sendo, portanto, Faltou).
         pa_unif["Data"] = pa_unif.apply(
             lambda r: MAPA_DATA_CONC.get(r["Mapa"], r["Data"]) if r["Data"] in ("-", 0, "0") else r["Data"],
             axis=1,
@@ -1599,9 +1585,6 @@ with aba_fechamento:
         sede_unif["PA"] = "Sede"
         partes_fechamento.append(sede_unif)
 
-    # df_fechamento_todas_datas alimenta o Mapa de Calor (precisa ver vários dias pra
-    # mostrar variação); df_fechamento (filtrado pela data escolhida) alimenta o Top
-    # Faltas/Sobras e as Justificativas — que são sempre sobre UM fechamento específico.
     df_fechamento_todas_datas = pd.concat(partes_fechamento, ignore_index=True) if partes_fechamento else pd.DataFrame(columns=["Mapa", "Item", "Diferença", "Data", "PA", "FamiliaConv"])
 
     pas_disponiveis = sorted(df_fechamento_todas_datas["PA"].unique().tolist()) if not df_fechamento_todas_datas.empty else ["Tianguá", "Granja", "Sede"]
@@ -1621,10 +1604,6 @@ with aba_fechamento:
         FAMILIAS_GARRAFA_FECHAMENTO = ("300ml", "600ml", "Verde 600", "1L")
 
         def formata_diferenca_caixas(diff, familia: str) -> str:
-            """Converte a diferença em unidades pra caixas + soltas — só pras famílias
-            de garrafa de verdade (300ml/600ml/Verde 600/1L), usando o mesmo fator do
-            resto do app (23/24/24/12). Qualquer outro item (garrafeira, pallet,
-            chapatex, barril) fica em unidade simples, sem virar 'caixa' errado."""
             diff = int(diff)
             sinal = "+" if diff > 0 else ("-" if diff < 0 else "")
             abs_diff = abs(diff)
@@ -1639,7 +1618,6 @@ with aba_fechamento:
             if soltas > 0: partes.append(f"{soltas} un")
             return f"{sinal}{' + '.join(partes)}"
 
-        # ================= TOP 10 FALTAS / TOP 10 SOBRAS (por caixa, com a PA) =================
         st.markdown(f"### 🔻🔺 Top 10 Faltas e Sobras — {data_fechamento_str}")
         st.caption("Quantidade em caixas (não em vasilhame solto) — cada linha já mostra em qual PA está ocorrendo.")
 
@@ -1675,7 +1653,6 @@ with aba_fechamento:
             else:
                 renderizar_tabela_limpa(top_sobras[["Item", "PA", "Qtd (cx)"]], ["Item", "PA", "Qtd (cx)"], col_status="")
 
-        # ================= JUSTIFICATIVAS (texto livre por Mapa+Item+Data) =================
         st.divider()
         st.markdown("### 📝 Justificativas")
 
@@ -1719,7 +1696,6 @@ with aba_fechamento:
             col_status="",
         )
 
-        # ================= MAPA DE CALOR (variação diária dos itens mais voláteis) =================
         st.divider()
         st.markdown("### 🌡️ Mapa de Calor — variação diária")
         st.caption("Diferença (Faltou/Sobrou) em caixas, por item e por dia, em todo o histórico disponível — a data do fechamento acima fica destacada.")
