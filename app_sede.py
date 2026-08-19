@@ -1442,8 +1442,15 @@ with aba_conciliacao:
             lambda r: MAPA_PA_CLASSIFICACAO.get(r["Mapa"], mapa_pa_lookup.get(r["Mapa"], "Aguardando Retorno")) if r["PA"] == 0 else r["PA"],
             axis=1,
         )
-        if tem_data_vazio_pa:
-            df_concil["Data"] = df_concil["Data"].replace(0, "-")
+        
+        # RECUPERAR DATAS FALTANTES (MAPAS SEM RETORNO DIGITADO AINDA)
+        if "Data" not in df_concil.columns:
+            df_concil["Data"] = "-"
+            
+        df_concil["Data"] = df_concil.apply(
+            lambda r: MAPA_DATA_CONC.get(r["Mapa"], r["Data"]) if str(r["Data"]).strip() in ("-", "0", "0.0", "nan", "") else r["Data"],
+            axis=1
+        )
 
         df_concil["Mapa"] = df_concil["Mapa"].apply(rotulo_mapa)
 
@@ -1474,9 +1481,8 @@ with aba_conciliacao:
                     "Familia": linha_lote["Familia"],
                     "Qtd_Saida_Unidades": saida_lote,
                     "Qtd_Retorno_Unidades": linha_lote["Qtd_Retorno_Unidades"],
+                    "Data": linha_lote["Data"] if "Data" in linha_lote else "-"
                 }
-                if tem_data_vazio_pa:
-                    linha_final["Data"] = linha_lote["Data"] if "Data" in linha_lote else "-"
                 linhas_lote_concil.append(linha_final)
 
             if linhas_lote_concil:
@@ -1530,16 +1536,16 @@ with aba_conciliacao:
         st.markdown("### 1. Filtros de Pesquisa")
         col_f1, col_f2, col_f3 = st.columns(3)
         
-        if tem_data_vazio_pa:
-            datas_disponiveis_pa = sorted(
-                {d for d in df_concil["Data"].unique() if d != "-"},
-                key=lambda d: pd.to_datetime(d, dayfirst=True, errors="coerce"),
-                reverse=True,
-            )
-            data_filter = col_f1.selectbox("📅 Data:", ["Todas"] + datas_disponiveis_pa, key="filtro_data_pa")
-        else:
-            data_filter = "Todas"
-            col_f1.selectbox("📅 Data:", ["Todas"], disabled=True)
+        datas_disponiveis_pa = sorted(
+            {d for d in df_concil["Data"].unique() if str(d).strip() not in ("-", "nan", "")},
+            key=lambda d: pd.to_datetime(d, dayfirst=True, errors="coerce"),
+            reverse=True,
+        )
+        
+        opcoes_data = ["Todas"] + datas_disponiveis_pa
+        idx_padrao_data = 1 if len(datas_disponiveis_pa) > 0 else 0
+        
+        data_filter = col_f1.selectbox("📅 Data:", opcoes_data, index=idx_padrao_data, key="filtro_data_pa")
 
         lista_pas = ["Todas"] + sorted(df_concil["PA"].unique().tolist())
         pa_filter = col_f2.selectbox("🏢 Ponto de Apoio:", lista_pas)
@@ -1548,14 +1554,14 @@ with aba_conciliacao:
 
         df_display = df_concil.copy()
 
-        if tem_data_vazio_pa and data_filter != "Todas":
+        if data_filter != "Todas":
             df_display = df_display[df_display["Data"] == data_filter]
         if pa_filter != "Todas":
             df_display = df_display[df_display["PA"] == pa_filter]
         if status_filter != "Todos":
             df_display = df_display[df_display["Status"] == status_filter]
 
-        colunas_exibir_pa = ["Mapa"] + (["Data"] if tem_data_vazio_pa else []) + ["PA", "Familia", "Saída", "Retorno", "Diferença", "Status"]
+        colunas_exibir_pa = ["Mapa", "Data", "PA", "Familia", "Saída", "Retorno", "Diferença", "Status"]
 
         st.divider()
         st.markdown("### 2. Análise do Mapa (Raio-X)")
