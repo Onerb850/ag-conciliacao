@@ -1488,7 +1488,7 @@ with aba_conciliacao:
 
         # 5. FILTROS E EXIBIÇÃO
         st.markdown("### Filtros de Pesquisa")
-        col_f1, col_f2, col_f3, col_f4 = st.columns([1, 1, 1, 1.5])
+        col_f1, col_f2, col_f3 = st.columns(3)
         
         datas_disponiveis_pa = sorted(
             {d for d in df_concil["Data"].unique() if str(d).strip() not in ("-", "nan", "")},
@@ -1505,8 +1505,6 @@ with aba_conciliacao:
         pa_filter = col_f2.selectbox("🏢 Ponto de Apoio:", lista_pas)
         
         status_filter = col_f3.selectbox("🚦 Status:", ["Todos", "❌ Faltou AG", "⚠️ Sobrou AG", "✅ Bateu"])
-        
-        mapa_search = col_f4.text_input("🔍 Mapa Específico (opcional):", "")
 
         df_display = df_concil.copy()
 
@@ -1516,8 +1514,6 @@ with aba_conciliacao:
             df_display = df_display[df_display["PA"] == pa_filter]
         if status_filter != "Todos":
             df_display = df_display[df_display["Status"] == status_filter]
-        if mapa_search.strip() != "":
-            df_display = df_display[df_display["Mapa"].str.contains(limpa_mapa(mapa_search))]
 
         colunas_exibir_pa = ["Mapa", "Data", "PA", "Familia", "Saída", "Retorno", "Diferença", "Status"]
 
@@ -1534,7 +1530,8 @@ with aba_conciliacao:
         ])
         
         st.write("")
-        renderizar_tabela_limpa(df_display[colunas_exibir_pa].sort_values(by=["Mapa", "Familia"]), colunas_exibir_pa)
+        with st.expander("📄 Ver tabela completa de conciliações", expanded=True):
+            renderizar_tabela_limpa(df_display[colunas_exibir_pa].sort_values(by=["Mapa", "Familia"]), colunas_exibir_pa)
 
 
 # =========================================================================
