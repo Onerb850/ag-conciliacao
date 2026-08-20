@@ -732,7 +732,7 @@ with aba_vazio_pa:
 
                 for familia_outros, qtd_un_nova in [
                     ("Chapatex", chapatex_pa), ("Pallet PBR1", pbr1_pa), ("Pallet PBR2", pbr2_pa),
-                    ("Barril 30L", barril30_pa), ("Barril 50L", barril50_pa),
+                    ("Barril 30L", barril30_lote), ("Barril 50L", barril50_lote),
                 ]:
                     unidades_existentes = int(valores_existentes_manual[familia_outros]["Unidades"]) if familia_outros in valores_existentes_manual else 0
                     qtd_un = unidades_existentes + qtd_un_nova
@@ -876,6 +876,9 @@ with aba_vazio_pa:
                 else:
                     st.warning("Nenhuma quantidade foi informada para salvar.")
 
+    # =====================================================================
+    # 📋 RESUMO ACUMULADO DO DIA COM JUSTIFICATIVA (ST.DATA_EDITOR)
+    # =====================================================================
     st.divider()
     st.markdown("### 📋 Resumo Acumulado do Dia (Saída vs Retorno)")
     st.caption("Acompanhe o status das conferências da data abaixo. Digite a justificativa direto na tabela e clique em Salvar.")
@@ -890,7 +893,18 @@ with aba_vazio_pa:
     dict_justif = {}
     if not hist_justificativas.empty:
         for _, r in hist_justificativas.iterrows():
-            dict_justif[(str(r.get("Data", "")), str(r.get("Mapas/Lote", "")), str(r.get("Item", "")))] = str(r.get("Justificativa", ""))
+            d_val = str(r.get("Data", "")).strip()
+            m_val = str(r.get("Mapas/Lote", "")).strip()
+            # Limpa o ".0" caso o pandas leia números de mapas individuais do Excel como float
+            if "," not in m_val:
+                m_val = limpar_numero_robusto(m_val)
+            i_val = str(r.get("Item", "")).strip()
+            
+            j_val = str(r.get("Justificativa", ""))
+            if j_val.lower() in ("nan", "none"):
+                j_val = ""
+                
+            dict_justif[(d_val, m_val, i_val)] = j_val
 
     hist_lote_resumo = ler_aba_historico(ABA_LOTE_ATIVA)
     if not hist_lote_resumo.empty and "Data" in hist_lote_resumo.columns:
@@ -899,6 +913,8 @@ with aba_vazio_pa:
             mapas_limpos = mapas_da_lote(mapas_r)
             mapas_resolvidos = resolver_mapas(mapas_limpos)
             saida_esperada = calcular_saida_familias(mapas_resolvidos)
+            
+            mapas_formatados = str(mapas_r).replace(";", ", ")
             
             for familia in FAMILIAS_CONFERENCIA:
                 saida_fam = saida_esperada.get(familia, 0)
@@ -914,11 +930,11 @@ with aba_vazio_pa:
                 dif = retorno_fam - saida_fam
                 status_txt = "✅ Bateu" if dif == 0 else ("❌ Faltou" if dif < 0 else "⚠️ Sobrou")
                 
-                chave_justif = (data_resumo_str, str(mapas_r), rotulo_conferencia(familia))
+                chave_justif = (data_resumo_str, mapas_formatados, rotulo_conferencia(familia))
                 
                 linhas_resumo_diario.append({
                     "PA": pa_r,
-                    "Mapas/Lote": str(mapas_r).replace(";", ", "),
+                    "Mapas/Lote": mapas_formatados,
                     "Item": rotulo_conferencia(familia),
                     "Saída": formata_un_em_cx(saida_fam, familia),
                     "Retorno": formata_un_em_cx(retorno_fam, familia),
@@ -931,7 +947,8 @@ with aba_vazio_pa:
     if not hist_indiv_resumo.empty and "Data" in hist_indiv_resumo.columns:
         hist_indiv_dia = hist_indiv_resumo[hist_indiv_resumo["Data"] == data_resumo_str]
         for (pa_r, mapa_r), group in hist_indiv_dia.groupby(["PA", "Mapa"]):
-            mapas_limpos = [limpa_mapa(mapa_r)]
+            mapa_formatado = limpar_numero_robusto(mapa_r)
+            mapas_limpos = [mapa_formatado]
             mapas_resolvidos = resolver_mapas(mapas_limpos)
             saida_esperada = calcular_saida_familias(mapas_resolvidos)
             
@@ -949,12 +966,12 @@ with aba_vazio_pa:
                 dif = retorno_fam - saida_fam
                 status_txt = "✅ Bateu" if dif == 0 else ("❌ Faltou" if dif < 0 else "⚠️ Sobrou")
                 
-                ja_existe = any(str(x["Mapas/Lote"]) == str(mapa_r) and x["Item"] == rotulo_conferencia(familia) for x in linhas_resumo_diario)
+                ja_existe = any(str(x["Mapas/Lote"]) == mapa_formatado and x["Item"] == rotulo_conferencia(familia) for x in linhas_resumo_diario)
                 if not ja_existe:
-                    chave_justif = (data_resumo_str, str(mapa_r), rotulo_conferencia(familia))
+                    chave_justif = (data_resumo_str, mapa_formatado, rotulo_conferencia(familia))
                     linhas_resumo_diario.append({
                         "PA": pa_r,
-                        "Mapas/Lote": str(mapa_r),
+                        "Mapas/Lote": mapa_formatado,
                         "Item": rotulo_conferencia(familia),
                         "Saída": formata_un_em_cx(saida_fam, familia),
                         "Retorno": formata_un_em_cx(retorno_fam, familia),
