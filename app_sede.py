@@ -517,76 +517,9 @@ if df_mapa_pa_periodo is not None and not df_mapa_pa_periodo.empty and "PA" in d
 MAPAS_PA_CONC = {m for m, pa in MAPA_PA_CLASSIFICACAO.items() if pa in ("Tianguá", "Granja")}
 MAPAS_SEDE_CONC = {m for m, pa in MAPA_PA_CLASSIFICACAO.items() if pa == "Sede"}
 
-_periodo_str = f"{data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}"
-with st.sidebar:
-    if df_mapa_pa is None or df_mapa_pa.empty:
-        st.error(f"Não encontrei '{ARQUIVO_MAPA_PA.name}' no Google Drive nem histórico acumulado ainda.")
-    else:
-        st.success(
-            f"{ARQUIVO_020501.name}: {len(df_020501_historico) if df_020501_historico is not None else 0} linha(s) acumuladas. "
-            f"CONC.csv: {len(MAPA_PA_CLASSIFICACAO)} mapa(s) no período ({_periodo_str})."
-        )
 
-        mapas_no_020501 = set(df_020501_historico["Mapa"].unique()) if df_020501_historico is not None and not df_020501_historico.empty else set()
-        mapas_conc_sem_relatorio = set(MAPA_PA_CLASSIFICACAO.keys()) - mapas_no_020501
-
-        if mapas_conc_sem_relatorio:
-            st.warning(f"⚠️ {len(mapas_conc_sem_relatorio)} mapa(s) do CONC.csv ainda não estão no 02.05.01.")
-            with st.expander("Ver quais (agrupado por PA)"):
-                mapas_faltantes_por_pa: dict[str, list[str]] = {}
-                for m in mapas_conc_sem_relatorio:
-                    mapas_faltantes_por_pa.setdefault(MAPA_PA_CLASSIFICACAO.get(m, "?"), []).append(m)
-                for pa_nome, lista_mapas in sorted(mapas_faltantes_por_pa.items()):
-                    lista_ordenada = sorted(lista_mapas, key=lambda x: int(str(x)) if str(x).isdigit() else 0)
-                    st.markdown(f"**{pa_nome}** ({len(lista_ordenada)}):")
-                    st.caption(", ".join(lista_ordenada))
-        else:
-            st.caption("✅ Todos os mapas do CONC.csv já estão no 02.05.01.")
-
-
-def gerar_simulacao_perfeita(data_alvo) -> pd.DataFrame:
-    if df_mapa_pa is None or df_mapa_pa.empty or df_020501_historico is None or df_020501_historico.empty:
-        return pd.DataFrame()
-
-    data_str = data_alvo.strftime("%d/%m/%Y")
-    _pa_normalizada_sim = df_mapa_pa["PA"].apply(lambda v: _PA_NORMALIZADO.get(str(v).strip().upper(), v))
-    mapas_pa_sim = df_mapa_pa[
-        (df_mapa_pa["Data"] == data_str) & (_pa_normalizada_sim.isin(["Tianguá", "Granja"]))
-    ][["Mapa", "PA"]].drop_duplicates().copy()
-    if mapas_pa_sim.empty:
-        return pd.DataFrame()
-
-    mapas_pa_sim["MapaResolvido"] = mapas_pa_sim["Mapa"].apply(resolver_mapa)
-    mapas_pa_sim["PA"] = mapas_pa_sim["PA"].apply(lambda v: _PA_NORMALIZADO.get(str(v).strip().upper(), v))
-    pa_lookup_sim = mapas_pa_sim.groupby("MapaResolvido")["PA"].first().to_dict()
-
-    familia_tipo_sim = df_020501_historico["Material"].apply(lambda c: familia_tipo_por_codigo(c, lookup_ag))
-    df_sim = df_020501_historico.copy()
-    df_sim["Familia"] = familia_tipo_sim.apply(lambda ft: normaliza_600(ft[0]))
-    df_sim["Tipo"] = familia_tipo_sim.apply(lambda ft: ft[1])
-    df_sim = df_sim[(df_sim["Familia"] != "Outro") & (df_sim["Tipo"] != "Garrafeira")]
-    df_sim = df_sim[df_sim["Mapa"].isin(mapas_pa_sim["MapaResolvido"].unique())]
-
-    saida_sim = df_sim.groupby(["Mapa", "Familia"])["Qtde_Saida"].sum().reset_index()
-    saida_sim = saida_sim[saida_sim["Qtde_Saida"] > 0]
-
-    linhas = []
-    for _, r in saida_sim.iterrows():
-        linhas.append({
-            "Data": data_str,
-            "PA": pa_lookup_sim.get(r["Mapa"], "Tianguá"),
-            "Mapa": r["Mapa"],
-            "Familia": r["Familia"],
-            "Caixas": 0,
-            "Garrafas": int(r["Qtde_Saida"]),
-            "Garrafeiras": 0,
-            "Unidades": 0,
-        })
-    return pd.DataFrame(linhas)
-
-
-aba_vazio_pa, aba_conciliacao_sede, aba_historico = st.tabs(
-    ["Vazio por PA", "Previsão Sede", "📈 Histórico Gerencial"]
+aba_vazio_pa, aba_investigacao, aba_conciliacao_sede, aba_historico = st.tabs(
+    ["Vazio por PA", "🔍 Investigação de Mapa", "Previsão Sede", "📈 Histórico Gerencial"]
 )
 
 def mapas_da_lote(mapas_str: str) -> list[str]:
@@ -614,9 +547,6 @@ if not _hist_lote_bruto.empty and "Mapas" in _hist_lote_bruto.columns:
 with aba_vazio_pa:
     st.caption("Conferência do vazio por PA e mapa.")
 
-    # =====================================================================
-    # 🚦 NOVO: PAINEL DE PENDÊNCIAS DE LANÇAMENTO (TIANGUÁ / GRANJA)
-    # =====================================================================
     st.markdown("### 🚦 Painel de Pendências de Lançamento (PAs)")
     st.caption("Acompanhe quais mapas de PA da data abaixo já foram conferidos e quais ainda faltam.")
     
@@ -946,9 +876,6 @@ with aba_vazio_pa:
                 else:
                     st.warning("Nenhuma quantidade foi informada para salvar.")
 
-    # =====================================================================
-    # 📋 RESUMO ACUMULADO DO DIA COM JUSTIFICATIVA (ST.DATA_EDITOR)
-    # =====================================================================
     st.divider()
     st.markdown("### 📋 Resumo Acumulado do Dia (Saída vs Retorno)")
     st.caption("Acompanhe o status das conferências da data abaixo. Digite a justificativa direto na tabela e clique em Salvar.")
@@ -959,7 +886,6 @@ with aba_vazio_pa:
 
     linhas_resumo_diario = []
     
-    # Prepara dicionário de justificativas existentes para preencher a tabela
     hist_justificativas = ler_aba_historico("Justificativas")
     dict_justif = {}
     if not hist_justificativas.empty:
@@ -1053,12 +979,10 @@ with aba_vazio_pa:
         
         st.write("")
         if st.button("💾 Salvar Resumo e Justificativas no Histórico", key="btn_save_resumo"):
-            # Salvar Justificativas
             df_justif_save = edited_resumo[["Mapas/Lote", "Item", "Justificativa"]].copy()
             df_justif_save.insert(0, "Data", data_resumo_str)
             acumular_historico(df_justif_save, "Justificativas", ["Data", "Mapas/Lote", "Item"])
             
-            # Salvar Snapshot Resumo
             df_resumo_save = edited_resumo.copy()
             df_resumo_save.insert(0, "Data", data_resumo_str)
             acumular_historico(df_resumo_save, "Snap_ResumoAcumulado", ["Data", "Mapas/Lote", "Item"])
@@ -1277,6 +1201,63 @@ with aba_vazio_pa:
                 st.rerun()
 
     st.divider()
+    with st.expander("☑️ Checklist de mapas lançados (Histórico Antigo)", expanded=False):
+        st.caption("Ferramenta mantida apenas para verificação de datas antigas.")
+        col_chk1, col_chk2 = st.columns(2)
+        data_checklist = col_chk1.date_input("Data", value=date.today(), key="data_checklist")
+        pa_checklist = col_chk2.selectbox("PA", ["Tianguá", "Granja", "Sede"], key="pa_checklist")
+
+        data_checklist_str = data_checklist.strftime("%d/%m/%Y")
+        mapas_checklist = []
+        if df_mapa_pa is not None and not df_mapa_pa.empty:
+            pa_norm_alvo_chk = _PA_NORMALIZADO.get(pa_checklist.strip().upper(), pa_checklist).upper()
+            pa_bate_chk = df_mapa_pa["PA"].apply(lambda v: _PA_NORMALIZADO.get(str(v).strip().upper(), v).upper() == pa_norm_alvo_chk)
+            mapas_checklist = sorted(
+                df_mapa_pa[(df_mapa_pa["Data"] == data_checklist_str) & pa_bate_chk]["Mapa"].dropna().unique().tolist(),
+                key=lambda m: int(m) if str(m).isdigit() else 0,
+            )
+
+        if not mapas_checklist:
+            st.info(f"Nenhum mapa cadastrado pra {pa_checklist} em {data_checklist_str} no CONC.csv.")
+        else:
+            MAPAS_JA_LANCADOS = MAPAS_INDIVIDUAIS | MAPAS_EM_LOTE
+            df_checklist_hist = ler_aba_historico("MapaChecklist")
+            checklist_manual = set()
+            if not df_checklist_hist.empty and "Data" in df_checklist_hist.columns:
+                checklist_manual = set(df_checklist_hist[df_checklist_hist["Data"] == data_checklist_str]["Mapa"].astype(str))
+
+            estados_novos = {}
+            cols_chk = st.columns(4)
+            for i, mapa_c in enumerate(mapas_checklist):
+                marcado_auto = mapa_c in MAPAS_JA_LANCADOS
+                valor_inicial = marcado_auto or (mapa_c in checklist_manual)
+                col = cols_chk[i % 4]
+                estados_novos[mapa_c] = col.checkbox(
+                    mapa_c, value=valor_inicial, key=f"chk_mapa_{data_checklist_str}_{pa_checklist}_{mapa_c}",
+                    disabled=marcado_auto,
+                    help="Já tem retorno lançado" if marcado_auto else "Marcação manual — só pra acompanhamento",
+                )
+
+            qtd_marcados = sum(estados_novos.values())
+            st.caption(f"{qtd_marcados} de {len(mapas_checklist)} mapa(s) marcados.")
+
+            if st.button("💾 Salvar checklist", key="salvar_checklist"):
+                linhas_checklist = [
+                    {"Data": data_checklist_str, "PA": pa_checklist, "Mapa": m, "Checado": 1}
+                    for m, marcado in estados_novos.items() if marcado and m not in MAPAS_JA_LANCADOS
+                ]
+                if linhas_checklist:
+                    acumular_historico(pd.DataFrame(linhas_checklist), "MapaChecklist", ["Data", "Mapa"])
+                desmarcados = [m for m, marcado in estados_novos.items() if not marcado and m in checklist_manual]
+                if desmarcados and not df_checklist_hist.empty:
+                    df_checklist_restante = df_checklist_hist[
+                        ~((df_checklist_hist["Data"] == data_checklist_str) & (df_checklist_hist["Mapa"].astype(str).isin(desmarcados)))
+                    ]
+                    salvar_aba_historico("MapaChecklist", df_checklist_restante)
+                st.success("Checklist salvo.")
+                st.rerun()
+
+    st.divider()
     with st.expander("🧹 Limpar mapa 'fantasma' do histórico do CONC", expanded=False):
         st.caption(
             "O app acumula todo mapa já visto no CONC.csv, pra Previsão de Contagem "
@@ -1322,6 +1303,127 @@ with aba_vazio_pa:
             salvar_aba_historico(NOME_ABA_SIMULACAO, pd.DataFrame(columns=["Data", "PA", "Mapa", "Familia", "Caixas", "Garrafas", "Garrafeiras", "Unidades"]))
             st.success("Dados de simulação apagados.")
             st.rerun()
+
+# =========================================================================
+# ABA DE INVESTIGAÇÃO DE MAPA (RAIO-X)
+# =========================================================================
+with aba_investigacao:
+    st.header("🔍 Investigação Detalhada de Mapa")
+    st.caption("Digite o número de um mapa para ver exatamente o que saiu na rota e o que retornou fisicamente.")
+
+    mapa_alvo = st.text_input("Número do Mapa:", placeholder="Ex: 258189", key="mapa_investigacao")
+
+    if mapa_alvo.strip():
+        mapa_limpo = limpa_mapa(mapa_alvo)
+        mapa_resolvido = resolver_mapa(mapa_limpo)
+        
+        st.markdown(f"### 🔎 Raio-X: Mapa `{mapa_limpo}`")
+        if mapa_limpo != mapa_resolvido:
+            st.caption(f"*(Consolidado no mapa {mapa_resolvido})*")
+
+        col_inv_out, col_inv_in = st.columns(2)
+
+        # --- SAÍDA ---
+        with col_inv_out:
+            st.markdown("#### 📤 Saída (02.05.01)")
+            if df_020501_historico is not None and not df_020501_historico.empty:
+                df_saida_mapa = df_020501_historico[df_020501_historico["Mapa"] == mapa_resolvido].copy()
+                if not df_saida_mapa.empty:
+                    if "Descricao" in df_saida_mapa.columns:
+                        df_saida_mapa["Item"] = df_saida_mapa.apply(lambda r: com_apelido(r["Material"], r["Descricao"]), axis=1)
+                    else:
+                        df_saida_mapa["Item"] = df_saida_mapa["Material"]
+                        
+                    df_saida_mapa = df_saida_mapa[["Item", "Qtde_Saida"]].rename(columns={"Qtde_Saida": "Qtd (un)"})
+                    df_saida_mapa["Qtd (un)"] = df_saida_mapa["Qtd (un)"].astype(int)
+                    df_saida_mapa = df_saida_mapa.sort_values("Qtd (un)", ascending=False)
+                    st.dataframe(df_saida_mapa, width='stretch', hide_index=True)
+                else:
+                    st.info("Nenhuma saída registrada para este mapa no 02.05.01.")
+            else:
+                st.warning("Relatório 02.05.01 não carregado.")
+
+        # --- RETORNO ---
+        with col_inv_in:
+            st.markdown("#### 🚚 Retorno (Digitado)")
+            encontrou_retorno = False
+            retornos_consolidados = {}
+            
+            if not _hist_lote_bruto.empty and "Mapas" in _hist_lote_bruto.columns:
+                lotes_encontrados = _hist_lote_bruto[_hist_lote_bruto["Mapas"].apply(lambda m: mapa_limpo in mapas_da_lote(m))]
+                if not lotes_encontrados.empty:
+                    encontrou_retorno = True
+                    st.success(f"📦 Lançado no Lote: `{lotes_encontrados.iloc[0]['Mapas'].replace(';', ', ')}`")
+                    
+                    df_ret_exib = lotes_encontrados[["Familia", "Caixas", "Garrafas", "Garrafeiras", "Unidades"]].copy()
+                    for c in ["Caixas", "Garrafas", "Garrafeiras", "Unidades"]:
+                        df_ret_exib[c] = pd.to_numeric(df_ret_exib[c], errors='coerce').fillna(0).astype(int)
+                    df_ret_exib = df_ret_exib.groupby("Familia").sum().reset_index()
+                    st.dataframe(df_ret_exib, width='stretch', hide_index=True)
+                    
+                    for _, r in df_ret_exib.iterrows():
+                        fam = r["Familia"]
+                        tot = r["Garrafas"] + r["Unidades"]
+                        retornos_consolidados[fam] = retornos_consolidados.get(fam, 0) + tot
+
+            if not _hist_vazio_pa_bruto.empty and "Mapa" in _hist_vazio_pa_bruto.columns:
+                indiv_encontrados = _hist_vazio_pa_bruto[_hist_vazio_pa_bruto["Mapa"].astype(str) == str(mapa_limpo)]
+                if not indiv_encontrados.empty:
+                    encontrou_retorno = True
+                    st.success("📝 Lançamento Individual")
+                    df_ret_exib = indiv_encontrados[["Familia", "Caixas", "Garrafas", "Garrafeiras", "Unidades"]].copy()
+                    for c in ["Caixas", "Garrafas", "Garrafeiras", "Unidades"]:
+                        df_ret_exib[c] = pd.to_numeric(df_ret_exib[c], errors='coerce').fillna(0).astype(int)
+                    st.dataframe(df_ret_exib, width='stretch', hide_index=True)
+                    
+                    for _, r in df_ret_exib.iterrows():
+                        fam = r["Familia"]
+                        tot = r["Garrafas"] + r["Unidades"]
+                        retornos_consolidados[fam] = retornos_consolidados.get(fam, 0) + tot
+
+            if not encontrou_retorno:
+                st.info("Nenhum retorno físico foi digitado para este mapa ainda.")
+
+        st.markdown("#### ⚖️ Resultado do Cruzamento")
+        saida_esperada = calcular_saida_familias([mapa_resolvido])
+        
+        linhas_status_inv = []
+        todas_familias = set(saida_esperada.keys()) | set(retornos_consolidados.keys())
+        
+        for familia in todas_familias:
+            saida_fam = saida_esperada.get(familia, 0)
+            retorno_fam = retornos_consolidados.get(familia, 0)
+            
+            if saida_fam == 0 and retorno_fam == 0:
+                continue
+                
+            dif = retorno_fam - saida_fam
+            status_txt = "✅ Bateu" if dif == 0 else ("❌ Faltou" if dif < 0 else "⚠️ Sobrou")
+            
+            if familia in FAMILIAS_CONFERENCIA:
+                rotulo = rotulo_conferencia(familia)
+                s_txt = formata_un_em_cx(saida_fam, familia)
+                r_txt = formata_un_em_cx(retorno_fam, familia)
+                d_txt = formata_dif_em_cx(dif, familia)
+            else:
+                rotulo = rotulo_familia_vazio(familia)
+                s_txt = f"{saida_fam} un"
+                r_txt = f"{retorno_fam} un"
+                sinal = "+" if dif > 0 else ""
+                d_txt = f"{sinal}{dif} un" if dif != 0 else "0"
+
+            linhas_status_inv.append({
+                "Item": rotulo,
+                "Saída": s_txt,
+                "Retorno": r_txt,
+                "Diferença": d_txt,
+                "Status": status_txt,
+            })
+            
+        if linhas_status_inv:
+            renderizar_tabela_limpa(pd.DataFrame(linhas_status_inv), ["Item", "Saída", "Retorno", "Diferença", "Status"])
+        else:
+            st.caption("Sem dados suficientes para cruzamento.")
 
 
 # =========================================================================
@@ -1451,7 +1553,6 @@ with aba_historico:
 
     aba_h_resumo, aba_h_pendencias, aba_h_previsao = st.tabs(["Resumo Acumulado", "Pendências (PA)", "Previsão (Sede/PA)"])
 
-    # --- HISTÓRICO: RESUMO ACUMULADO ---
     with aba_h_resumo:
         df_snap_resumo = ler_aba_historico("Snap_ResumoAcumulado")
         if df_snap_resumo.empty:
@@ -1466,7 +1567,6 @@ with aba_historico:
             else:
                 st.dataframe(df_filtrado_resumo, width='stretch', hide_index=True)
 
-    # --- HISTÓRICO: PENDÊNCIAS ---
     with aba_h_pendencias:
         df_snap_pend = ler_aba_historico("Snap_Pendencias")
         if df_snap_pend.empty:
@@ -1481,7 +1581,6 @@ with aba_historico:
             else:
                 st.dataframe(df_filtrado_pend, width='stretch', hide_index=True)
 
-    # --- HISTÓRICO: PREVISÃO ---
     with aba_h_previsao:
         df_snap_prev = ler_aba_historico("Snap_PrevisaoAG")
         if df_snap_prev.empty:
