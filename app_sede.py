@@ -95,7 +95,6 @@ ICONES_RESUMO = {
 
 
 def renderizar_cards_resumo(itens: list[tuple[str, int, str]] | list[tuple[str, int, str, list[str] | None]]) -> None:
-    """Renderiza cartões de resumo compactos."""
     colunas = st.columns(len(itens))
     for col, item in zip(colunas, itens):
         rotulo, valor, cor = item[0], item[1], item[2]
@@ -585,8 +584,9 @@ def gerar_simulacao_perfeita(data_alvo) -> pd.DataFrame:
         })
     return pd.DataFrame(linhas)
 
-aba_vazio_pa, aba_conciliacao_sede = st.tabs(
-    ["Vazio por PA", "Previsão Sede"]
+
+aba_vazio_pa, aba_conciliacao_sede, aba_historico = st.tabs(
+    ["Vazio por PA", "Previsão Sede", "📈 Histórico Gerencial"]
 )
 
 def mapas_da_lote(mapas_str: str) -> list[str]:
@@ -624,7 +624,6 @@ with aba_vazio_pa:
     data_painel_chk = col_dt_chk.date_input("Data da Descarga / Fechamento", value=date.today(), key="data_painel_pendencias")
     data_painel_chk_str = data_painel_chk.strftime("%d/%m/%Y")
 
-    # Identifica mapas de Tianguá e Granja no CONC.csv nessa data
     mapas_conc_dia = {}
     if df_mapa_pa is not None and not df_mapa_pa.empty and "Data" in df_mapa_pa.columns and "PA" in df_mapa_pa.columns:
         sub_conc_painel = df_mapa_pa[df_mapa_pa["Data"] == data_painel_chk_str].copy()
@@ -633,7 +632,6 @@ with aba_vazio_pa:
             if pa_nome in ("Tianguá", "Granja"):
                 mapas_conc_dia.setdefault(pa_nome, set()).add(limpar_numero_robusto(r_c["Mapa"]))
 
-    # Identifica o que já foi lançado no VazioPA e VazioPALote PARA ESTA DATA
     mapas_lancados_dia = set()
     
     hist_lote_chk = ler_aba_historico(ABA_LOTE_ATIVA)
@@ -663,23 +661,36 @@ with aba_vazio_pa:
         ])
 
         st.write("")
+        linhas_pendencias = []
         cols_pa_chk = st.columns(len(mapas_conc_dia))
         for col_p, (nome_pa_chk, conjunto_mapas) in zip(cols_pa_chk, sorted(mapas_conc_dia.items())):
             mapas_ordenados = sorted(conjunto_mapas, key=lambda x: int(x) if str(x).isdigit() else 0)
             lancados_pa = [m for m in mapas_ordenados if m in mapas_lancados_dia]
             pendentes_pa = [m for m in mapas_ordenados if m not in mapas_lancados_dia]
             
+            linhas_pendencias.append({
+                "Data": data_painel_chk_str,
+                "PA": nome_pa_chk,
+                "Total Mapas": len(mapas_ordenados),
+                "Lançados": len(lancados_pa),
+                "Pendentes": len(pendentes_pa),
+                "Lista Pendentes": ", ".join(pendentes_pa) if pendentes_pa else "Nenhum"
+            })
+            
             with col_p:
                 st.markdown(f"**🚛 {nome_pa_chk}** ({len(lancados_pa)}/{len(mapas_ordenados)} lançados)")
-                
-                # HTML com Badges/Crachás
                 badges_html = []
                 for m in lancados_pa:
                     badges_html.append(f'<span style="background:#EAF3DE; color:#173404; font-size:12px; font-weight:700; padding:3px 9px; border-radius:6px; margin:2px; display:inline-block;">✅ {m}</span>')
                 for m in pendentes_pa:
                     badges_html.append(f'<span style="background:#FCEBEB; color:#501313; font-size:12px; font-weight:700; padding:3px 9px; border-radius:6px; margin:2px; display:inline-block;">⏳ {m}</span>')
-                
                 st.markdown(f'<div style="background:#F8F9FA; padding:10px; border-radius:8px; border:1px solid #E9ECEF;">{"".join(badges_html)}</div>', unsafe_allow_html=True)
+
+        if linhas_pendencias:
+            st.write("")
+            if st.button("💾 Salvar Pendências no Histórico", key="btn_save_pend"):
+                acumular_historico(pd.DataFrame(linhas_pendencias), "Snap_Pendencias", ["Data", "PA"])
+                st.success("✅ Salvo na aba 'Snap_Pendencias' do histórico no Drive!")
 
     st.divider()
     st.markdown("### ✍️ Conferência Manual (um ou vários mapas)")
@@ -936,17 +947,24 @@ with aba_vazio_pa:
                     st.warning("Nenhuma quantidade foi informada para salvar.")
 
     # =====================================================================
-    # 📋 RESUMO ACUMULADO DO DIA
+    # 📋 RESUMO ACUMULADO DO DIA COM JUSTIFICATIVA (ST.DATA_EDITOR)
     # =====================================================================
     st.divider()
     st.markdown("### 📋 Resumo Acumulado do Dia (Saída vs Retorno)")
-    st.caption("Acompanhe o status de todas as conferências que você já salvou para a data abaixo.")
+    st.caption("Acompanhe o status das conferências da data abaixo. Digite a justificativa direto na tabela e clique em Salvar.")
     
     col_res1, col_res2 = st.columns([1, 3])
     data_resumo = col_res1.date_input("Data do Resumo", value=data_painel_chk, key="data_resumo_diario")
     data_resumo_str = data_resumo.strftime("%d/%m/%Y")
 
     linhas_resumo_diario = []
+    
+    # Prepara dicionário de justificativas existentes para preencher a tabela
+    hist_justificativas = ler_aba_historico("Justificativas")
+    dict_justif = {}
+    if not hist_justificativas.empty:
+        for _, r in hist_justificativas.iterrows():
+            dict_justif[(str(r.get("Data", "")), str(r.get("Mapas/Lote", "")), str(r.get("Item", "")))] = str(r.get("Justificativa", ""))
 
     hist_lote_resumo = ler_aba_historico(ABA_LOTE_ATIVA)
     if not hist_lote_resumo.empty and "Data" in hist_lote_resumo.columns:
@@ -970,6 +988,8 @@ with aba_vazio_pa:
                 dif = retorno_fam - saida_fam
                 status_txt = "✅ Bateu" if dif == 0 else ("❌ Faltou" if dif < 0 else "⚠️ Sobrou")
                 
+                chave_justif = (data_resumo_str, str(mapas_r), rotulo_conferencia(familia))
+                
                 linhas_resumo_diario.append({
                     "PA": pa_r,
                     "Mapas/Lote": str(mapas_r).replace(";", ", "),
@@ -978,6 +998,7 @@ with aba_vazio_pa:
                     "Retorno": formata_un_em_cx(retorno_fam, familia),
                     "Diferença": formata_dif_em_cx(dif, familia),
                     "Status": status_txt,
+                    "Justificativa": dict_justif.get(chave_justif, "")
                 })
 
     hist_indiv_resumo = ler_aba_historico(ABA_VAZIO_PA_ATIVA)
@@ -1004,6 +1025,7 @@ with aba_vazio_pa:
                 
                 ja_existe = any(str(x["Mapas/Lote"]) == str(mapa_r) and x["Item"] == rotulo_conferencia(familia) for x in linhas_resumo_diario)
                 if not ja_existe:
+                    chave_justif = (data_resumo_str, str(mapa_r), rotulo_conferencia(familia))
                     linhas_resumo_diario.append({
                         "PA": pa_r,
                         "Mapas/Lote": str(mapa_r),
@@ -1012,12 +1034,35 @@ with aba_vazio_pa:
                         "Retorno": formata_un_em_cx(retorno_fam, familia),
                         "Diferença": formata_dif_em_cx(dif, familia),
                         "Status": status_txt,
+                        "Justificativa": dict_justif.get(chave_justif, "")
                     })
 
     if linhas_resumo_diario:
         df_resumo = pd.DataFrame(linhas_resumo_diario)
         df_resumo = df_resumo.sort_values(by=["PA", "Mapas/Lote", "Item"])
-        renderizar_tabela_limpa(df_resumo, ["PA", "Mapas/Lote", "Item", "Saída", "Retorno", "Diferença", "Status"])
+        
+        edited_resumo = st.data_editor(
+            df_resumo,
+            use_container_width=True,
+            hide_index=True,
+            disabled=["PA", "Mapas/Lote", "Item", "Saída", "Retorno", "Diferença", "Status"],
+            column_config={
+                "Justificativa": st.column_config.TextColumn("📝 Justificativa", help="Clique aqui para digitar", max_chars=250)
+            }
+        )
+        
+        st.write("")
+        if st.button("💾 Salvar Resumo e Justificativas no Histórico", key="btn_save_resumo"):
+            # Salvar Justificativas
+            df_justif_save = edited_resumo[["Mapas/Lote", "Item", "Justificativa"]].copy()
+            df_justif_save.insert(0, "Data", data_resumo_str)
+            acumular_historico(df_justif_save, "Justificativas", ["Data", "Mapas/Lote", "Item"])
+            
+            # Salvar Snapshot Resumo
+            df_resumo_save = edited_resumo.copy()
+            df_resumo_save.insert(0, "Data", data_resumo_str)
+            acumular_historico(df_resumo_save, "Snap_ResumoAcumulado", ["Data", "Mapas/Lote", "Item"])
+            st.success("✅ Resumo e Justificativas salvos nas abas 'Snap_ResumoAcumulado' e 'Justificativas' do Drive!")
     else:
         st.info(f"Nenhuma conferência encontrada para a data {data_resumo_str}.")
 
@@ -1232,63 +1277,6 @@ with aba_vazio_pa:
                 st.rerun()
 
     st.divider()
-    with st.expander("☑️ Checklist de mapas lançados (Histórico Antigo)", expanded=False):
-        st.caption("Ferramenta mantida apenas para verificação de datas antigas.")
-        col_chk1, col_chk2 = st.columns(2)
-        data_checklist = col_chk1.date_input("Data", value=date.today(), key="data_checklist")
-        pa_checklist = col_chk2.selectbox("PA", ["Tianguá", "Granja", "Sede"], key="pa_checklist")
-
-        data_checklist_str = data_checklist.strftime("%d/%m/%Y")
-        mapas_checklist = []
-        if df_mapa_pa is not None and not df_mapa_pa.empty:
-            pa_norm_alvo_chk = _PA_NORMALIZADO.get(pa_checklist.strip().upper(), pa_checklist).upper()
-            pa_bate_chk = df_mapa_pa["PA"].apply(lambda v: _PA_NORMALIZADO.get(str(v).strip().upper(), v).upper() == pa_norm_alvo_chk)
-            mapas_checklist = sorted(
-                df_mapa_pa[(df_mapa_pa["Data"] == data_checklist_str) & pa_bate_chk]["Mapa"].dropna().unique().tolist(),
-                key=lambda m: int(m) if str(m).isdigit() else 0,
-            )
-
-        if not mapas_checklist:
-            st.info(f"Nenhum mapa cadastrado pra {pa_checklist} em {data_checklist_str} no CONC.csv.")
-        else:
-            MAPAS_JA_LANCADOS = MAPAS_INDIVIDUAIS | MAPAS_EM_LOTE
-            df_checklist_hist = ler_aba_historico("MapaChecklist")
-            checklist_manual = set()
-            if not df_checklist_hist.empty and "Data" in df_checklist_hist.columns:
-                checklist_manual = set(df_checklist_hist[df_checklist_hist["Data"] == data_checklist_str]["Mapa"].astype(str))
-
-            estados_novos = {}
-            cols_chk = st.columns(4)
-            for i, mapa_c in enumerate(mapas_checklist):
-                marcado_auto = mapa_c in MAPAS_JA_LANCADOS
-                valor_inicial = marcado_auto or (mapa_c in checklist_manual)
-                col = cols_chk[i % 4]
-                estados_novos[mapa_c] = col.checkbox(
-                    mapa_c, value=valor_inicial, key=f"chk_mapa_{data_checklist_str}_{pa_checklist}_{mapa_c}",
-                    disabled=marcado_auto,
-                    help="Já tem retorno lançado" if marcado_auto else "Marcação manual — só pra acompanhamento",
-                )
-
-            qtd_marcados = sum(estados_novos.values())
-            st.caption(f"{qtd_marcados} de {len(mapas_checklist)} mapa(s) marcados.")
-
-            if st.button("💾 Salvar checklist", key="salvar_checklist"):
-                linhas_checklist = [
-                    {"Data": data_checklist_str, "PA": pa_checklist, "Mapa": m, "Checado": 1}
-                    for m, marcado in estados_novos.items() if marcado and m not in MAPAS_JA_LANCADOS
-                ]
-                if linhas_checklist:
-                    acumular_historico(pd.DataFrame(linhas_checklist), "MapaChecklist", ["Data", "Mapa"])
-                desmarcados = [m for m, marcado in estados_novos.items() if not marcado and m in checklist_manual]
-                if desmarcados and not df_checklist_hist.empty:
-                    df_checklist_restante = df_checklist_hist[
-                        ~((df_checklist_hist["Data"] == data_checklist_str) & (df_checklist_hist["Mapa"].astype(str).isin(desmarcados)))
-                    ]
-                    salvar_aba_historico("MapaChecklist", df_checklist_restante)
-                st.success("Checklist salvo.")
-                st.rerun()
-
-    st.divider()
     with st.expander("🧹 Limpar mapa 'fantasma' do histórico do CONC", expanded=False):
         st.caption(
             "O app acumula todo mapa já visto no CONC.csv, pra Previsão de Contagem "
@@ -1357,13 +1345,11 @@ with aba_conciliacao_sede:
     else:
         data_previsao_str = data_previsao.strftime("%d/%m/%Y")
         
-        # Filtra mapas do dia no CONC.csv
         sub_conc_data = df_mapa_pa[df_mapa_pa["Data"] == data_previsao_str].copy()
         
         if sub_conc_data.empty:
             st.warning(f"Nenhum mapa cadastrado em {data_previsao_str} na planilha '{ARQUIVO_MAPA_PA.name}'.")
         else:
-            # Mapeamento de cada mapa resolvido para seu Ponto de Apoio (Sede, Tianguá, Granja...)
             pa_por_mapa_data = {}
             for _, r in sub_conc_data.iterrows():
                 m_res = resolver_mapa(str(r["Mapa"]))
@@ -1386,15 +1372,14 @@ with aba_conciliacao_sede:
             if df_previsao.empty:
                 st.info("Nenhum dos mapas dessa data foi encontrado no relatório ainda.")
             else:
-                # Vincula a PA em cada registro de saída
                 df_previsao["PA"] = df_previsao["Mapa"].apply(lambda m: pa_por_mapa_data.get(m, "Sede"))
                 
-                # Lista de PAs presentes no dia (ex: Sede, Tianguá, Granja)
                 pas_no_dia = sorted(df_previsao["PA"].unique().tolist(), key=lambda p: (0 if p == "Sede" else 1, p))
 
-                # Monta as sub-abas: Geral (Total) + Cada PA individualmente
                 titulos_abas = ["🌐 Total Geral"] + [f"🏢 {p}" if p == "Sede" else f"🚛 {p}" for p in pas_no_dia]
                 sub_abas_previsao = st.tabs(titulos_abas)
+
+                linhas_prev_save = []
 
                 # 1. SUB-ABA: TOTAL GERAL
                 with sub_abas_previsao[0]:
@@ -1416,7 +1401,97 @@ with aba_conciliacao_sede:
                         st.caption(f"Mapas: {', '.join(mapas_pa_especifico)}")
                         
                         dados_fam_pa, dados_outros_pa = extrair_dados_farol(df_pa_especifico, lookup_ag)
+                        
+                        for fam, d in dados_fam_pa.items():
+                            linhas_prev_save.append({
+                                "Data": data_previsao_str, "PA": nome_pa,
+                                "Item": rotulo_familia_vazio(fam),
+                                "Caixas": d["caixas"], "Garrafas_Soltas": d["soltas"]
+                            })
+                        for item_nome, qtd in dados_outros_pa.items():
+                            linhas_prev_save.append({
+                                "Data": data_previsao_str, "PA": nome_pa,
+                                "Item": item_nome,
+                                "Caixas": 0, "Garrafas_Soltas": qtd
+                            })
+                            
                         if dados_fam_pa or dados_outros_pa:
                             renderizar_farol_previsao(dados_fam_pa, dados_outros_pa)
                         else:
                             st.info(f"Não houve movimentação de vasilhame em {nome_pa} nesta data.")
+
+                if linhas_prev_save:
+                    st.write("")
+                    if st.button("💾 Salvar Previsão no Histórico", key="btn_save_previsao"):
+                        acumular_historico(pd.DataFrame(linhas_prev_save), "Snap_PrevisaoAG", ["Data", "PA", "Item"])
+                        st.success("✅ Salvo na aba 'Snap_PrevisaoAG' do histórico no Drive!")
+
+# =========================================================================
+# ABA DE HISTÓRICO GERENCIAL (CONSULTA DOS ÚLTIMOS 3 MESES)
+# =========================================================================
+with aba_historico:
+    st.header("📈 Histórico Gerencial")
+    st.caption("Consulte os retratos de conferência salvos nos últimos 90 dias.")
+
+    data_limite_inicio = date.today() - timedelta(days=90)
+    
+    col_hist1, _ = st.columns([1, 2])
+    data_filtro_hist = col_hist1.date_input(
+        "Filtrar período do histórico:",
+        value=(data_limite_inicio, date.today()),
+        max_value=date.today(),
+        key="filtro_datas_historico"
+    )
+
+    if isinstance(data_filtro_hist, tuple) and len(data_filtro_hist) == 2:
+        dt_inicio_hist, dt_fim_hist = data_filtro_hist
+    else:
+        dt_inicio_hist = data_filtro_hist[0] if isinstance(data_filtro_hist, tuple) else data_filtro_hist
+        dt_fim_hist = date.today()
+
+    aba_h_resumo, aba_h_pendencias, aba_h_previsao = st.tabs(["Resumo Acumulado", "Pendências (PA)", "Previsão (Sede/PA)"])
+
+    # --- HISTÓRICO: RESUMO ACUMULADO ---
+    with aba_h_resumo:
+        df_snap_resumo = ler_aba_historico("Snap_ResumoAcumulado")
+        if df_snap_resumo.empty:
+            st.info("Nenhum histórico de Resumo Acumulado foi salvo ainda.")
+        else:
+            df_snap_resumo["Data_Real"] = pd.to_datetime(df_snap_resumo["Data"], format="%d/%m/%Y", errors="coerce")
+            mascara = (df_snap_resumo["Data_Real"].dt.date >= dt_inicio_hist) & (df_snap_resumo["Data_Real"].dt.date <= dt_fim_hist)
+            df_filtrado_resumo = df_snap_resumo[mascara].drop(columns=["Data_Real"]).sort_values(by=["Data", "PA"], ascending=[False, True])
+            
+            if df_filtrado_resumo.empty:
+                st.warning("Nenhum registro encontrado neste período.")
+            else:
+                st.dataframe(df_filtrado_resumo, width='stretch', hide_index=True)
+
+    # --- HISTÓRICO: PENDÊNCIAS ---
+    with aba_h_pendencias:
+        df_snap_pend = ler_aba_historico("Snap_Pendencias")
+        if df_snap_pend.empty:
+            st.info("Nenhum histórico de Pendências foi salvo ainda.")
+        else:
+            df_snap_pend["Data_Real"] = pd.to_datetime(df_snap_pend["Data"], format="%d/%m/%Y", errors="coerce")
+            mascara = (df_snap_pend["Data_Real"].dt.date >= dt_inicio_hist) & (df_snap_pend["Data_Real"].dt.date <= dt_fim_hist)
+            df_filtrado_pend = df_snap_pend[mascara].drop(columns=["Data_Real"]).sort_values(by=["Data", "PA"], ascending=[False, True])
+            
+            if df_filtrado_pend.empty:
+                st.warning("Nenhum registro encontrado neste período.")
+            else:
+                st.dataframe(df_filtrado_pend, width='stretch', hide_index=True)
+
+    # --- HISTÓRICO: PREVISÃO ---
+    with aba_h_previsao:
+        df_snap_prev = ler_aba_historico("Snap_PrevisaoAG")
+        if df_snap_prev.empty:
+            st.info("Nenhum histórico de Previsão foi salvo ainda.")
+        else:
+            df_snap_prev["Data_Real"] = pd.to_datetime(df_snap_prev["Data"], format="%d/%m/%Y", errors="coerce")
+            mascara = (df_snap_prev["Data_Real"].dt.date >= dt_inicio_hist) & (df_snap_prev["Data_Real"].dt.date <= dt_fim_hist)
+            df_filtrado_prev = df_snap_prev[mascara].drop(columns=["Data_Real"]).sort_values(by=["Data", "PA"], ascending=[False, True])
+            
+            if df_filtrado_prev.empty:
+                st.warning("Nenhum registro encontrado neste período.")
+            else:
+                st.dataframe(df_filtrado_prev, width='stretch', hide_index=True)
