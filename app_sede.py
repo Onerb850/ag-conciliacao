@@ -732,7 +732,7 @@ with aba_vazio_pa:
 
                 for familia_outros, qtd_un_nova in [
                     ("Chapatex", chapatex_pa), ("Pallet PBR1", pbr1_pa), ("Pallet PBR2", pbr2_pa),
-                    ("Barril 30L", barril30_lote), ("Barril 50L", barril50_lote),
+                    ("Barril 30L", barril30_pa), ("Barril 50L", barril50_pa),
                 ]:
                     unidades_existentes = int(valores_existentes_manual[familia_outros]["Unidades"]) if familia_outros in valores_existentes_manual else 0
                     qtd_un = unidades_existentes + qtd_un_nova
